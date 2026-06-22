@@ -29,7 +29,7 @@ Enforced by `lint-imports` (configured in `pyproject.toml`).
 |---------|------|--------------------|
 | `core` | `packages/core/` | `models.py`, `interfaces.py` (Protocols), `errors.py`. Frozen dataclasses for all value objects. |
 | `retrieval` | `packages/retrieval/` | `pgvector_store.py` (raw SQL, no ORM), `hybrid.py`, `embedder.py` (BGE-M3, lazy-loaded), `qdrant_store.py` (stub). |
-| `ingest` | `packages/ingest/` | `router.py` (GROBID → PyMuPDF fallback), `parsers/grobid.py`, `parsers/pymupdf.py`, `chunking.py`, `tasks.py`, `persist.py`. |
+| `ingest` | `packages/ingest/` | `router.py` (GROBID → PyMuPDF fallback), `parsers/grobid.py`, `parsers/pymupdf.py`, `chunking.py`, `tasks.py`, `persist.py`, `doi.py` (Crossref resolver). |
 | `qa` | `packages/qa/` | `engine.py` (retrieve-then-generate), `llm.py` (OpenAI/Ollama), `verifier.py` (LiteralVerifier + TwoLayerVerifier). |
 | `eval` | `packages/eval/` | **Empty scaffold** (only `__init__.py`). |
 | `api` | `packages/api/` | FastAPI app, routes: `health`, `ingest`, `jobs`, `qa`. DI in `deps.py`. |
@@ -92,6 +92,9 @@ DATABASE_URL=postgresql://rc:rc@localhost:5432/research_copilot \
 | `packages/core/interfaces.py` | Protocols: Retriever, Parser, Embedder, LLMClient, Verifier |
 | `packages/core/models.py` | Paper, Chunk, ChunkRef, ScoredChunk, UpsertChunk, Claim, ClaimVerdict, QAResult |
 | `packages/core/errors.py` | RCError, IngestError, ParseError, RetrievalError, EmbeddingError, VerificationError |
+| `packages/ingest/doi.py` | Crossref DOI resolver via `httpx.AsyncClient` → `_build_paper()` mapper |
+| `packages/ingest/persist.py` | Uses `Retriever` Protocol (`retriever.upsert()`) for chunk persistence |
+| `migrations/006_jobs_next_attempt_at.sql` | Additive — `next_attempt_at` column for worker retry backoff |
 | `pyproject.toml` | ruff config, mypy config, import-linter contracts, pytest config |
 | `docker-compose.yml` | Local stack: pgvector, Redis, GROBID, MinIO, rc-api, rc-worker |
 | `docker-compose.test.yml` | Test infra: pgvector, Redis, GROBID, MinIO (no app containers) |
@@ -165,3 +168,14 @@ Three feature tasks + two adversarial sanity-check rounds. Architecture stayed *
 5. **Empty question crashes QA** — `QAEngine.answer()` returns `QAResult(answerable=False, ...)` immediately when input is blank
 6. **`k <= 0` crashes retrieval** — `PgVectorStore._search_dense/_search_lexical` clamps `k = max(k, 1)`
 7. **Stale `stage` on re-run** — `router.py:90` resets `stage="parsing"` before re-processing
+
+### Session 2 — Persist Refactor, Worker Retry, DOI Ingest, LLM Abstention
+
+| Task | What | Files |
+|------|------|-------|
+| **C1** | `persist.py` delegates chunk upsert to `Retriever` Protocol (`retriever.upsert()`) instead of raw SQL; `PgVectorStore.upsert` passes full 10-field metadata; paper insert in tx, chunk upsert outside, cleanup via `_delete_paper` | `packages/ingest/persist.py` |
+| **M-WRK** | `next_attempt_at` column for exponential-backoff retry; worker SELECT includes `status='failed'` with backoff gate; `fail()` sets `next_attempt_at`; `mark_running/done/dead` clear it | `migrations/006_jobs_next_attempt_at.sql`, `packages/worker/run.py` |
+| **DOI** | `resolve_doi()` hits Crossref API via injectable `httpx.AsyncClient`; `_build_paper()` maps response → `Paper`; `kind='ingest_doi'` dispatch in `tasks.py`; metadata-only Paper persisted via `Retriever` | `packages/ingest/doi.py`, `packages/ingest/tasks.py` |
+| **M-ABS** | `QAEngine.answer()` wraps `_generate`+`_apply_policy` in `try/except LLMError` → returns abstention; extracted `_abstain()` helper; LLM failures no longer 500 | `packages/qa/engine.py` |
+
+- **Verifier refactor** (async protocol, remove inline logic from engine) — deferred to separate session; existing sync `TwoLayerVerifier` + inline `_verify_one`/`_verify_claims` preserved.

@@ -1,4 +1,4 @@
-"""Integration tests against the real compose stack (pgvector, Redis, GROBID, MinIO).
+"""Integration tests against the real compose stack (pgvector, Redis, GROBID).
 
 Every test exercises the real path end-to-end for its scenario.
 Mocks are used ONLY where real infrastructure cannot produce the
@@ -9,7 +9,6 @@ Required external services (see ``docker-compose.test.yml``):
   - PostgreSQL 16 + pgvector + pg_trgm + uuid-ossp
   - Redis 7
   - GROBID 0.8.1
-  - MinIO
 
 Usage:
   docker compose -f docker-compose.test.yml up -d --wait

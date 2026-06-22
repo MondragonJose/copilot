@@ -92,3 +92,15 @@ class TestRRFFuse:
         texts = {f.chunk.chunk_id: f.chunk.text for f in fused}
         assert texts["c1"] == "from dense"
         assert texts["c2"] == "from lexical"
+
+    def test_score_range(self) -> None:
+        dense = [_sc("a", score=0.5)]
+        lexical = [_sc("a", score=0.5)]
+        fused = rrf_fuse(dense, lexical, k=60.0)
+        assert 0.0 < fused[0].score < 1.0
+
+    def test_top_n_none_returns_all(self) -> None:
+        dense = [_sc(f"c{i}", score=1.0) for i in range(5)]
+        lexical = [_sc(f"c{i}", score=1.0) for i in range(3)]
+        fused = rrf_fuse(dense, lexical, top_n=None)
+        assert len(fused) == 5

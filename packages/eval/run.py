@@ -4,7 +4,10 @@ Usage::
 
     python -m eval.run
 
-Gate: PASS iff citation_faithfulness >= 0.95 AND correct_abstention >= 0.90.
+Gate (Blueprint §6):
+  PASS iff citation_faithfulness >= 0.95 AND correct_abstention >= 0.90.
+  Recall@10 and MRR are reported as objectives (≥0.85 / ≥0.6) but do NOT
+  block the gate per the spec.
 Exits with code 0 on PASS, 1 on FAIL.
 """
 
@@ -16,10 +19,13 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+from core.models import QAResult
+from eval.goldset import GoldRow
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +36,12 @@ logger = logging.getLogger(__name__)
 FAITHFULNESS_THRESHOLD = 0.95
 ABSTENTION_THRESHOLD = 0.90
 DEFAULT_REPORT_DIR = "eval_data/reports"
+
+# Minimum goldset size for statistically meaningful evaluation (§6)
+MIN_GOLDSET_SIZE = 50
+
+# Retrieval evaluation
+RECALL_K = 10
 
 GateResult = Literal["PASS", "FAIL"]
 
@@ -54,7 +66,9 @@ class EvalReport:
     mrr: float | None
     litqa2_accuracy: float | None
     litqa2_precision_at_answered: float | None
-    _raw: dict = field(default_factory=dict, repr=False)
+    goldset_size: int = 0
+    goldset_note: str = ""
+    _raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def gate(self) -> GateResult:
@@ -73,21 +87,23 @@ class EvalReport:
             "=" * 56,
             "Research Copilot — Evaluation Report",
             f"  Timestamp:              {self.timestamp}",
+            f"  Goldset size:           {self.goldset_size}",
+        ]
+        if self.goldset_note:
+            lines.append(f"  Goldset note:           {self.goldset_note}")
+        lines += [
             f"  Gate:                   {self.gate}",
             "=" * 56,
-            "  Citation faithfulness   {:.3f}    (threshold {:.2f})".format(
-                self.citation_faithfulness or 0.0, FAITHFULNESS_THRESHOLD,
-            ),
-            "  Correct abstention      {:.3f}    (threshold {:.2f})".format(
-                self.correct_abstention or 0.0, ABSTENTION_THRESHOLD,
-            ),
-            "  Answer accuracy         {:.3f}".format(
-                self.answer_accuracy or 0.0,
-            ),
-            "  Recall@K                {}".format(
+            f"  Citation faithfulness   "
+            f"{self.citation_faithfulness or 0.0:.3f}    (threshold {FAITHFULNESS_THRESHOLD:.2f})",
+            f"  Correct abstention      "
+            f"{self.correct_abstention or 0.0:.3f}    (threshold {ABSTENTION_THRESHOLD:.2f})",
+            f"  Answer accuracy         {self.answer_accuracy or 0.0:.3f}",
+            "  Recall@{:<2d}              {}    (target >= 0.85)".format(
+                RECALL_K,
                 f"{self.recall_at_k:.3f}" if self.recall_at_k is not None else "N/A",
             ),
-            "  MRR                     {}".format(
+            "  MRR                     {}    (target >= 0.60)".format(
                 f"{self.mrr:.3f}" if self.mrr is not None else "N/A",
             ),
             "  LitQA2 accuracy         {}".format(
@@ -126,9 +142,15 @@ def write_report(report: EvalReport, directory: str = DEFAULT_REPORT_DIR) -> Pat
     payload = {
         "timestamp": report.timestamp,
         "gate": report.gate,
+        "goldset_size": report.goldset_size,
+        "goldset_note": report.goldset_note,
         "thresholds": {
             "citation_faithfulness": FAITHFULNESS_THRESHOLD,
             "correct_abstention": ABSTENTION_THRESHOLD,
+        },
+        "objectives": {
+            "recall_at_10": 0.85,
+            "mrr": 0.6,
         },
         "metrics": {
             "citation_faithfulness": report.citation_faithfulness,
@@ -143,6 +165,71 @@ def write_report(report: EvalReport, directory: str = DEFAULT_REPORT_DIR) -> Pat
 
     report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
     return report_path
+
+
+# ---------------------------------------------------------------------------
+# Retrieval metrics helper
+# ---------------------------------------------------------------------------
+
+
+async def compute_retrieval_metrics(
+    gold_rows: Sequence[GoldRow],
+    retriever: Any,
+    embedder: Any,
+    k: int = RECALL_K,
+) -> tuple[float | None, float | None]:
+    """Compute recall@k and MRR across all answerable goldset rows.
+
+    For each answerable row (``gold_relevant_chunk_ids`` non-empty), run
+    dense search, collect ranked chunk IDs, and compare against the gold
+    relevant set.
+
+    Returns
+    -------
+    ``(recall_at_k, mrr)`` where both are ``None`` if no answerable rows
+    have relevant chunks defined.
+    """
+    from eval.metrics import mean_reciprocal_rank, recall_at_k
+
+    answerable_rows = [r for r in gold_rows if r.gold_relevant_chunk_ids]
+    if not answerable_rows:
+        return None, None
+
+    retrieved_per_q: list[list[str]] = []
+    relevant_per_q: list[set[str]] = []
+
+    for row in answerable_rows:
+        vectors = await embedder.embed([row.question])
+        scored = await retriever.search_dense(
+            vectors[0], k=k,
+        )
+        retrieved_ids = [sc.chunk.chunk_id for sc in scored]
+        retrieved_per_q.append(retrieved_ids)
+        relevant_per_q.append(set(row.gold_relevant_chunk_ids))
+
+    recall_scores = [
+        recall_at_k(retrieved, relevant, k=k)
+        for retrieved, relevant in zip(retrieved_per_q, relevant_per_q)
+    ]
+    recall_val = sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
+    mrr_val = mean_reciprocal_rank(retrieved_per_q, relevant_per_q)
+    return recall_val, mrr_val
+
+
+# ---------------------------------------------------------------------------
+# Goldset note helper
+# ---------------------------------------------------------------------------
+
+
+def goldset_note(goldset_size: int, min_size: int = MIN_GOLDSET_SIZE) -> str:
+    """Return a note string for the report, or empty string if goldset is adequate."""
+    if goldset_size >= min_size:
+        return ""
+    return (
+        f"INSUFFICIENT EVIDENCE — goldset has {goldset_size} rows; "
+        f"Blueprint §6 requires ≥{min_size} for statistically "
+        f"meaningful evaluation. All metrics computed on available data."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,11 +248,11 @@ async def main() -> None:
         "postgresql://rc:rc@localhost:5432/research_copilot",
     )
 
+    from qa.engine import QAEngine
+    from qa.llm import LLMProvider
     from retrieval.db import Pool
     from retrieval.embedder import BgeM3Embedder
     from retrieval.pgvector_store import PgVectorStore
-    from qa.engine import QAEngine
-    from qa.llm import LLMProvider
 
     pool = Pool(dsn=database_url)
     await pool.open()
@@ -186,7 +273,7 @@ async def main() -> None:
             correct_abstention,
         )
 
-        goldset_path = "eval_data/goldset_v1.jsonl"
+        goldset_path = "eval_data/goldset_v2.jsonl"
 
         # First pass: collect chunk_ids referenced in the goldset
         import json as _json
@@ -196,7 +283,10 @@ async def main() -> None:
             for line in f:
                 line = line.strip()
                 if line:
-                    chunk_ids.add(_json.loads(line)["chunk_id"])
+                    data = _json.loads(line)
+                    chunk_ids.add(data["chunk_id"])
+                    for cid in data.get("gold_relevant_chunk_ids", []):
+                        chunk_ids.add(cid)
 
         # Fetch chunk texts from the database
         chunk_texts: dict[str, str] = {}
@@ -212,7 +302,7 @@ async def main() -> None:
         logger.info("Loaded %d goldset rows", len(gold_rows))
 
         # Run QA on each goldset question
-        gold_results = []
+        gold_results: list[QAResult] = []
         gold_answerable: list[bool] = []
         gold_correct: list[bool] = []
 
@@ -221,7 +311,7 @@ async def main() -> None:
             gold_results.append(qa_result)
             gold_answerable.append(row.answerable)
             if row.answerable:
-                matched = row.gold_answer.lower().strip() in (
+                matched = (row.gold_answer or "").lower().strip() in (
                     qa_result.answer or ""
                 ).lower().strip()
                 gold_correct.append(matched)
@@ -234,6 +324,24 @@ async def main() -> None:
         faithfulness = citation_faithfulness(gold_results)
         accuracy = answer_accuracy(gold_results, gold_correct, gold_answerable)
         abstention = correct_abstention(gold_results, gold_answerable)
+
+        # ── Retrieval metrics (recall@K, MRR) ───────────────────────────
+        recall_val, mrr_val = await compute_retrieval_metrics(
+            gold_rows, pgvector, embedder, k=RECALL_K,
+        )
+        if recall_val is not None:
+            logger.info(
+                "Retrieval metrics: recall@%d=%.3f, MRR=%.3f",
+                RECALL_K, recall_val, mrr_val,
+            )
+        else:
+            logger.warning(
+                "No answerable questions have relevant chunks — "
+                "cannot compute recall/MRR",
+            )
+
+        # ── Goldset note (INSUFFICIENT EVIDENCE if below target) ─────────
+        gs_note = goldset_note(len(gold_rows))
 
         # ── LitQA2 ──────────────────────────────────────────────────────
         from eval.litqa2 import LitQA2Runner
@@ -248,10 +356,12 @@ async def main() -> None:
             citation_faithfulness=faithfulness,
             correct_abstention=abstention,
             answer_accuracy=accuracy,
-            recall_at_k=None,
-            mrr=None,
+            recall_at_k=recall_val,
+            mrr=mrr_val,
             litqa2_accuracy=litqa2_report.accuracy,
             litqa2_precision_at_answered=litqa2_report.precision_at_answered,
+            goldset_size=len(gold_rows),
+            goldset_note=gs_note,
         )
 
         gate = check_gate(report)

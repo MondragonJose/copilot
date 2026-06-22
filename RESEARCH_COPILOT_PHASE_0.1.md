@@ -12,7 +12,7 @@
 |---|----------|---------|----------------|
 | S1 | Lenguaje backend | Python 3.11 + FastAPI | ❌ No reversible |
 | S2 | Vector store | Postgres 16 + pgvector 0.7+ | ✅ Reversible vía interfaz |
-| S3 | Cola async | Redis + Arq | ✅ Reversible |
+| S3 | Cola async | Postgres polling (FOR UPDATE SKIP LOCKED) | ✅ Reversible |
 | S4 | Motor QA | Custom retrieve-then-generate (Retriever + LLMClient) | ✅ Reversible (tras interfaz) |
 | S5 | LLM dev | API opt-in (Claude/GPT); Ollama local opcional | ✅ Reversible |
 | S6 | Embeddings | BGE-M3 (sentence-transformers, dim 1024) | ❌ No reversible sin reindexar |
@@ -33,28 +33,28 @@ research-copilot/
 ├── docker-compose.yml          # stack local
 ├── .env.example
 ├── packages/
-│   ├── core/                   # rc_core: dominio puro, SIN side-effects
+│   ├── core/                   # dominio puro, SIN side-effects
 │   │   ├── models.py           #   Paper, Chunk, Citation, QAResult
 │   │   ├── interfaces.py       #   Protocols: Retriever, Parser, Embedder, LLMClient, Verifier
 │   │   └── errors.py
-│   ├── ingest/                 # rc_ingest: pipeline de ingesta
+│   ├── ingest/                 # pipeline de ingesta
 │   │   ├── router.py           #   selección de parser por tipo/calidad
 │   │   ├── parsers/            #   grobid.py, pymupdf.py
 │   │   ├── chunking.py         #   chunking estructura-aware
-│   │   └── tasks.py            #   jobs Arq
-│   ├── retrieval/              # rc_retrieval: implementaciones de Retriever
+│   │   └── tasks.py            #   jobs (Postgres polling)
+│   ├── retrieval/              # implementaciones de Retriever
 │   │   ├── pgvector_store.py
 │   │   ├── qdrant_store.py     #   stub para swap futuro
 │   │   └── hybrid.py           #   fusión BM25 + denso (off por flag)
-│   ├── qa/                     # rc_qa: loop de QA + verificación
+│   ├── qa/                     # loop de QA + verificación
 │   │   ├── engine.py           #   retrieve-then-generate con verificación
 │   │   ├── verifier.py         #   verificación de citas
 │   │   └── prompts/
-│   ├── eval/                   # rc_eval: arnés de evaluación
+│   ├── eval/                   # arnés de evaluación
 │   │   ├── litqa2.py
 │   │   ├── goldset.py
 │   │   └── metrics.py          #   recall@k, MRR, citation faithfulness
-│   └── api/                    # rc_api: FastAPI, único punto con I/O HTTP
+│   └── api/                    # FastAPI, único punto con I/O HTTP
 │       ├── main.py
 │       ├── routes/             #   ingest, search, qa, jobs, health
 │       └── deps.py             #   DI/wiring
@@ -231,7 +231,7 @@ class Retriever(Protocol):
 ```
 POST /ingest (PDF o DOI)
   → crea row en jobs (queued)
-  → Arq worker toma el job
+  → Worker poller (FOR UPDATE SKIP LOCKED) toma el job
     → Router de parsers:
         ¿PDF con capa de texto + GROBID responde?
           → Sí: GROBID (secciones + refs + meta)
@@ -412,7 +412,7 @@ volumes:
 | 5 | Embedder BGE-M3 + batching | 3 | Vectores dim=1024 normalizados; throughput documentado |
 | 6 | Parser GROBID + PyMuPDF + router | 1, 3 | 3 PDFs fixture: GROBID produce secciones; timeout cae a PyMuPDF |
 | 7 | Chunking + persistencia | 4, 6 | Chunks con section, offsets, page; sin cruzar secciones |
-| 8 | Pipeline ingesta async (Arq) | 5, 7 | POST /ingest → done; fallo forzado → dead con stage/error |
+| 8 | Pipeline ingesta async (Postgres polling) | 5, 7 | POST /ingest → done; fallo forzado → dead con stage/error |
 | 9 | Loop QA + Verifier | 4, 8 | Pregunta answerable → cita con quoted_span literal en chunk |
 | 10 | Arnés eval + goldset_v1 + reporte | 9 | `make eval` emite métricas; go/no-go evaluado automáticamente |
 
@@ -421,7 +421,7 @@ volumes:
 ## 9. Resumen de Decisiones
 
 ### Tomadas (ya decididas)
-- Python/FastAPI, Postgres+pgvector, Arq, custom retrieve-then-generate QA, BGE-M3, GROBID+PyMuPDF
+- Python/FastAPI, Postgres+pgvector, Postgres polling (FOR UPDATE SKIP LOCKED), custom retrieve-then-generate QA, BGE-M3, GROBID+PyMuPDF
 - Single-user sin auth, verificación en dos capas con anclaje literal obligatorio
 
 ### Diferidas con default (reversibles)

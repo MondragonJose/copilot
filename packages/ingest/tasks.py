@@ -5,19 +5,24 @@ Pipeline stages tracked in ``jobs.stage``::
     queued → parse → chunk → persist → done
 
 On failure the worker increments ``attempts``, stores the error, and
-reverts to ``failed``.  Once ``attempts >= max_attempts`` the job goes
-``dead`` with the last error and stage preserved.
+reverts to ``failed`` with ``next_attempt_at`` set per exponential backoff.
+Once ``attempts >= max_attempts`` the job goes ``dead`` with the last error
+and stage preserved.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from core._sql import UPSERT_PAPER_SQL
 from core._utils import exponential_backoff
-from core.errors import RCError
+from core.errors import IngestError, RCError
 from core.interfaces import Embedder, Parser, Retriever
 from core.models import Chunk, Paper
 from ingest.chunking import chunk_document
+from ingest.doi import resolve_doi
 from ingest.persist import persist_document
 from retrieval.db import Pool
 
@@ -43,13 +48,17 @@ async def process_job(
     if job_row is None:
         return {"result": "not_found"}
 
+    kind = job_row.get("kind")
+    if kind == "ingest_doi":
+        return await _process_doi(pool, job_row, job_id)
+
+    new_attempts, max_attempts = _bump_attempts(job_row)
+    await _mark_running(pool, job_id, new_attempts)
+
     pdf_path = _extract_pdf_path(job_row)
     if pdf_path is None:
         await _mark_dead(pool, job_id, "parse", "No pdf_path in job payload")
         return {"result": "failed", "error": "No pdf_path"}
-
-    new_attempts, max_attempts = _bump_attempts(job_row)
-    await _mark_running(pool, job_id, new_attempts)
 
     stage: str | None = None
 
@@ -100,8 +109,78 @@ def _extract_pdf_path(job: dict[str, object]) -> str | None:
     return pdf_path
 
 
+async def _process_doi(
+    pool: Pool,
+    job_row: dict[str, object],
+    job_id: str,
+) -> dict[str, object]:
+    """Resolve DOI metadata and persist the paper (no chunks/embeddings).
+
+    This handler runs **before** ``_mark_running`` / ``_bump_attempts`` so
+    that transient network errors are caught by the generic ``except``
+    block in ``process_job`` (which calls ``_handle_failure`` and sets
+    ``next_attempt_at`` for retry).
+    """
+    new_attempts, max_attempts = _bump_attempts(job_row)
+    await _mark_running(pool, job_id, new_attempts)
+
+    stage: str | None = None
+
+    try:
+        await _set_stage(pool, job_id, "doi")
+        stage = "doi"
+
+        doi = _extract_doi(job_row)
+        if doi is None:
+            raise IngestError("No doi in job payload")
+
+        paper = await resolve_doi(doi)
+
+        await _set_stage(pool, job_id, "persist")
+        stage = "persist"
+        await pool.execute(
+            UPSERT_PAPER_SQL,
+            paper.id,
+            paper.doi,
+            paper.title,
+            paper.authors,
+            paper.year,
+            paper.venue,
+            paper.abstract,
+            paper.source,
+            paper.open_access,
+            paper.pdf_path,
+            paper.grobid_tei,
+            paper.meta,
+        )
+
+        await _mark_done(pool, job_id)
+        return {"result": "done", "doi": doi, "paper_id": paper.id}
+
+    except RCError as exc:
+        await _handle_failure(
+            pool, job_id, stage or "doi", str(exc), new_attempts, max_attempts,
+        )
+        return {"result": "failed", "error": str(exc)}
+
+    except Exception as exc:
+        await _handle_failure(
+            pool, job_id, stage or "doi", f"Unexpected error: {exc}", new_attempts,
+            max_attempts,
+        )
+        return {"result": "failed", "error": str(exc)}
+
+
+def _extract_doi(job: dict[str, object]) -> str | None:
+    payload = job.get("payload") or {}
+    doi: str | None = (
+        payload.get("doi") if isinstance(payload, dict) else None
+    )
+    return doi
+
+
 def _bump_attempts(
-    job: dict[str, object],
+    job: dict[str, Any],
 ) -> tuple[int, int]:
     new_attempts = (job.get("attempts") or 0) + 1
     max_attempts = job.get("max_attempts") or 3
@@ -111,7 +190,7 @@ def _bump_attempts(
 async def _mark_running(pool: Pool, job_id: str, attempts: int) -> None:
     await pool.execute(
         "UPDATE jobs SET status = 'running', attempts = $1, "
-        "updated_at = now() WHERE id = $2::uuid",
+        "next_attempt_at = NULL, updated_at = now() WHERE id = $2::uuid",
         attempts, job_id,
     )
 
@@ -132,7 +211,7 @@ async def _set_stage(pool: Pool, job_id: str, stage: str) -> None:
 async def _mark_done(pool: Pool, job_id: str) -> None:
     await pool.execute(
         "UPDATE jobs SET status = 'done', stage = NULL, error = NULL, "
-        "updated_at = now() WHERE id = $1::uuid",
+        "next_attempt_at = NULL, updated_at = now() WHERE id = $1::uuid",
         job_id,
     )
 
@@ -140,7 +219,7 @@ async def _mark_done(pool: Pool, job_id: str) -> None:
 async def _mark_dead(pool: Pool, job_id: str, stage: str, error: str) -> None:
     await pool.execute(
         "UPDATE jobs SET status = 'dead', stage = $1, error = $2, "
-        "updated_at = now() WHERE id = $3::uuid",
+        "next_attempt_at = NULL, updated_at = now() WHERE id = $3::uuid",
         stage, error, job_id,
     )
 
@@ -156,14 +235,17 @@ async def _handle_failure(
     if attempts >= max_attempts:
         await pool.execute(
             "UPDATE jobs SET status = 'dead', stage = $1, error = $2, "
-            "updated_at = now() WHERE id = $3::uuid",
+            "next_attempt_at = NULL, updated_at = now() WHERE id = $3::uuid",
             stage, error, job_id,
         )
     else:
+        next_attempt_at = datetime.now(UTC) + timedelta(
+            seconds=backoff_delay(attempts),
+        )
         await pool.execute(
             "UPDATE jobs SET status = 'failed', stage = $1, error = $2, "
-            "updated_at = now() WHERE id = $3::uuid",
-            stage, error, job_id,
+            "next_attempt_at = $4, updated_at = now() WHERE id = $3::uuid",
+            stage, error, job_id, next_attempt_at,
         )
 
 

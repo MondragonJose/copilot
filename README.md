@@ -40,7 +40,6 @@ Services:
 | Frontend | http://localhost:5173        |
 | API      | http://localhost:8000        |
 | GROBID   | http://localhost:8070        |
-| MinIO    | http://localhost:9001        |
 
 ### Shutdown
 
@@ -159,9 +158,6 @@ Copy `.env.example` to `.env` and edit:
 | `DATABASE_URL`   | No       | `postgresql://rc:rc@...`    | PostgreSQL connection string     |
 | `REDIS_URL`      | No       | `redis://redis:6379/0`      | Redis connection string          |
 | `GROBID_URL`     | No       | `http://grobid:8070`        | GROBID service URL               |
-| `S3_ENDPOINT`    | No       | `http://minio:9000`         | MinIO S3 endpoint                |
-| `S3_ACCESS_KEY`  | No       | `rc`                        | MinIO access key                 |
-| `S3_SECRET_KEY`  | No       | `rc_minio_secret`           | MinIO secret key                 |
 
 *Required only for the QA loop — local dev works without it (no LLM = abstention).
 
@@ -207,7 +203,6 @@ curl -X POST http://localhost:8000/qa \
 1. Ensure all tests pass: `make test && cd frontend && npm test`
 2. Ensure lint is clean: `make lint`
 3. Run the eval gate: `make eval`
-4. If the gate reports **PASS**, tag the release: `make release`
-5. Push the tag: `git push origin v0.1.0`
+4. If the gate reports **PASS**, create and push the release tag: `make release && git push origin --tags`
 
 > Tagging is **forbidden** when `make eval` reports FAIL.

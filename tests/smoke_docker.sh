@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ────────────────────────────────────────────────────────────────────
 # Smoke test for Research Copilot Docker stack.
-# Waits for all services (db, redis, grobid, minio, api, frontend)
+# Waits for all services (db, redis, grobid, api, frontend)
 # to report healthy.  Exits 0 on success, 1 on timeout/failure.
 # ────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 MAX_WAIT_SECONDS=180
 POLL_INTERVAL=5
-SERVICES=("db" "redis" "grobid" "minio" "api" "frontend")
+SERVICES=("db" "redis" "grobid" "api" "frontend")
 
 echo "=== Smoke: Research Copilot Docker stack ==="
 echo "Waiting up to ${MAX_WAIT_SECONDS}s for services: ${SERVICES[*]}"

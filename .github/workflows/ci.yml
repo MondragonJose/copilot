@@ -26,8 +26,8 @@ jobs:
       - name: Ruff check
         run: ruff check .
 
-      - name: Mypy (core)
-        run: mypy packages/core
+      - name: Mypy (all packages)
+        run: mypy packages
 
       - name: Import linter
         run: lint-imports
@@ -66,8 +66,8 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev,test]"
 
-      - name: Run tests
-        run: pytest -v
+      - name: Run tests with coverage
+        run: pytest -v --cov=packages --cov-report=term-missing --cov-fail-under=91
         env:
           DATABASE_URL: postgresql://rc:rc@localhost:5432/research_copilot
           REDIS_URL: redis://localhost:6379/0

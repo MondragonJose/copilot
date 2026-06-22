@@ -8,6 +8,7 @@ Every upsert is idempotent via ``INSERT … ON CONFLICT (id) DO UPDATE``.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from core._sql import UPSERT_CHUNK_SQL, UPSERT_EMBEDDING_SQL
 from core.errors import RetrievalError
@@ -21,7 +22,7 @@ _DENSE_SELECT = (
     "SELECT c.id, c.paper_id, c.text, c.section, c.page, "
     "       c.char_start, c.char_end, "
     "       GREATEST(0.0, LEAST(1.0, "
-    "           1.0 - (e.vector <=> $2::vector) / 2.0"
+    "           1.0 - (e.vector <=> $1::vector) / 2.0"
     "       )) AS score "
 )
 _DENSE_FROM = "FROM chunks c JOIN embeddings e ON c.id = e.chunk_id "
@@ -57,12 +58,20 @@ class PgVectorStore:
         vector: list[float]
         for item in items:
             vector = list(item.vector)
+            md = item.metadata
 
             await self._pool.execute(
                 UPSERT_CHUNK_SQL,
                 item.chunk_id,
                 item.paper_id,
+                md.get("ordinal", 0),
+                md.get("section"),
                 item.text,
+                md.get("char_start"),
+                md.get("char_end"),
+                md.get("page"),
+                md.get("token_count"),
+                md.get("content_hash", ""),
             )
 
             await self._pool.execute(
@@ -120,25 +129,30 @@ class PgVectorStore:
         ef_search = max(k * _EF_SEARCH_MULTIPLIER, _EF_SEARCH_MIN)
 
         where = ""
-        params: list[object] = [ef_search, vector, k]
+        params: list[object] = [vector, k]
         if paper_ids is not None:
-            where = "WHERE c.paper_id = ANY($4::uuid[]) "
+            where = "WHERE c.paper_id = ANY($3::uuid[]) "
             params.append(list(paper_ids))
 
         sql = (
-            "SET LOCAL hnsw.ef_search = $1; "
-            + _DENSE_SELECT
+            _DENSE_SELECT
             + _DENSE_FROM
             + where
-            + "ORDER BY e.vector <=> $2::vector "
-            + "LIMIT $3"
+            + "ORDER BY e.vector <=> $1::vector "
+            + "LIMIT $2"
         )
-        rows = await self._pool.fetch(sql, *params)
+
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f"SET LOCAL hnsw.ef_search = {ef_search}"
+                )
+                rows = await conn.fetch(sql, *params)
 
         return [self._row_to_scored(row, "dense") for row in rows]
 
     @staticmethod
-    def _row_to_scored(row: object, channel: str) -> ScoredChunk:
+    def _row_to_scored(row: Any, channel: str) -> ScoredChunk:
         return ScoredChunk(
             chunk=ChunkRef(
                 chunk_id=str(row["id"]),

@@ -39,6 +39,8 @@ async def main() -> None:
                 "  SELECT id FROM jobs "
                 "  WHERE status = 'queued' "
                 "     OR (status = 'running' AND updated_at < now() - interval '5 minutes')"
+                "     OR (status = 'failed' AND attempts < max_attempts "
+                "         AND (next_attempt_at IS NULL OR next_attempt_at <= now()))"
                 "  LIMIT 1 FOR UPDATE SKIP LOCKED"
                 ") RETURNING id::text, attempts, max_attempts",
             )

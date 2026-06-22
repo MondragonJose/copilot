@@ -77,6 +77,20 @@ class TestLiteralVerifier:
         verdicts = verifier.verify(claims)
         assert verdicts[0].supported is True
 
+    def test_case_sensitive_match(self) -> None:
+        verifier = LiteralVerifier({"c1": "Self-Attention is important."})
+
+        verdict_lower = verifier.verify([
+            _make_claim(chunk_id="c1", quoted_span="self-attention"),
+        ])
+        assert not verdict_lower[0].supported
+        assert verdict_lower[0].reason == "span_not_found"
+
+        verdict_exact = verifier.verify([
+            _make_claim(chunk_id="c1", quoted_span="Self-Attention"),
+        ])
+        assert verdict_exact[0].supported
+
 
 # ---------------------------------------------------------------------------
 # TwoLayerVerifier
@@ -172,3 +186,41 @@ class TestTwoLayerVerifier:
         claims = [_make_claim(quoted_span="span")]
         verdicts = v.verify(claims)
         assert verdicts[0].score == 0.0
+
+    def test_threshold_at_zero_always_passes(self, mock_llm: LLMClient) -> None:
+        mock_llm.generate = AsyncMock(return_value="0.01")
+        v = TwoLayerVerifier({"c1": "Grass is green."}, mock_llm, threshold=0.0)
+        claims = [_make_claim(chunk_id="c1", quoted_span="Grass is green")]
+        verdicts = v.verify(claims)
+        assert verdicts[0].supported
+        assert verdicts[0].score == 0.01
+
+    def test_threshold_at_one_requires_perfect_score(
+        self, mock_llm: LLMClient,
+    ) -> None:
+        mock_llm.generate = AsyncMock(return_value="0.99")
+        v = TwoLayerVerifier({"c1": "Grass is green."}, mock_llm, threshold=1.0)
+        claims = [_make_claim(chunk_id="c1", quoted_span="Grass is green")]
+        verdicts = v.verify(claims)
+        assert not verdicts[0].supported
+        assert verdicts[0].reason == "entailment_below_threshold"
+
+        mock_llm.generate = AsyncMock(return_value="1.0")
+        v2 = TwoLayerVerifier({"c1": "Grass is green."}, mock_llm, threshold=1.0)
+        verdicts2 = v2.verify(claims)
+        assert verdicts2[0].supported
+
+    def test_multiple_claims_all_pass(self, mock_llm: LLMClient) -> None:
+        mock_llm.generate = AsyncMock(return_value="0.95")
+        v = TwoLayerVerifier(
+            {"c1": "Transformers use attention.", "c2": "RNNs process sequences."},
+            mock_llm, threshold=0.5,
+        )
+        claims = [
+            _make_claim(text="attention", chunk_id="c1", quoted_span="use attention"),
+            _make_claim(text="sequences", chunk_id="c2", quoted_span="process sequences"),
+        ]
+        verdicts = v.verify(claims)
+        assert len(verdicts) == 2
+        assert all(v.supported for v in verdicts)
+        assert all(v.score == 0.95 for v in verdicts)

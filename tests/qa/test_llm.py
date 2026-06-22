@@ -36,6 +36,29 @@ class TestLLMConfig:
         assert cfg.api_key == "sk-test"
         assert cfg.model == "llama3"
 
+    def test_from_env_populates_all_fields(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LLM_PROVIDER", "ollama")
+        monkeypatch.setenv("LLM_API_KEY", "env-key")
+        monkeypatch.setenv("LLM_BASE_URL", "https://env.example.com/v1")
+        monkeypatch.setenv("LLM_MODEL", "gpt-4")
+        monkeypatch.setenv("LLM_TIMEOUT", "60.0")
+        monkeypatch.setenv("LLM_MAX_RETRIES", "5")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://env-ollama:11434")
+        monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+
+        cfg = LLMConfig.from_env()
+
+        assert cfg.provider == "ollama"
+        assert cfg.api_key == "env-key"
+        assert cfg.base_url == "https://env.example.com/v1"
+        assert cfg.model == "gpt-4"
+        assert cfg.timeout == 60.0
+        assert cfg.max_retries == 5
+        assert cfg.ollama_base_url == "http://env-ollama:11434"
+        assert cfg.ollama_model == "llama3"
+
 
 # ---------------------------------------------------------------------------
 # LLMProvider
@@ -181,6 +204,60 @@ class TestLLMProvider:
         call_url = str(mock_client.post.call_args[0][0])
         assert "custom.api.com" in call_url
 
+    @pytest.mark.asyncio
+    async def test_sends_authorization_header(
+        self, mock_client: httpx.AsyncClient,
+    ) -> None:
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(
+            return_value={"choices": [{"message": {"content": "OK"}}]},
+        )
+        mock_client.post.return_value = mock_response
+        cfg = LLMConfig(provider="openai", api_key="sk-custom-key")
+        provider = LLMProvider(config=cfg, client=mock_client)
+        await provider.generate("Hi")
+        call_kwargs = mock_client.post.call_args[1]
+        assert "Authorization" in call_kwargs.get("headers", {})
+        assert call_kwargs["headers"]["Authorization"] == "Bearer sk-custom-key"
+
+    @pytest.mark.asyncio
+    async def test_no_api_key_skips_auth_header(
+        self, mock_client: httpx.AsyncClient,
+    ) -> None:
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(
+            return_value={"choices": [{"message": {"content": "OK"}}]},
+        )
+        mock_client.post.return_value = mock_response
+        cfg = LLMConfig(provider="openai", api_key=None)
+        provider = LLMProvider(config=cfg, client=mock_client)
+        await provider.generate("Hi")
+        call_kwargs = mock_client.post.call_args[1]
+        headers = call_kwargs.get("headers", {})
+        assert "Authorization" not in headers
+
+    @pytest.mark.asyncio
+    async def test_retries_on_timeout_then_succeeds(
+        self, mock_client: httpx.AsyncClient,
+    ) -> None:
+        ok_response = MagicMock(spec=httpx.Response)
+        ok_response.status_code = 200
+        ok_response.json = MagicMock(
+            return_value={"choices": [{"message": {"content": "After timeout"}}]},
+        )
+        mock_client.post.side_effect = [
+            httpx.TimeoutException("timeout", request=MagicMock()),
+            ok_response,
+        ]
+        cfg = LLMConfig(provider="openai", api_key="sk-test",
+                        max_retries=2, timeout=5.0)
+        provider = LLMProvider(config=cfg, client=mock_client)
+        result = await provider.generate("Hi")
+        assert result == "After timeout"
+        assert mock_client.post.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers
@@ -228,3 +305,18 @@ class TestIsRetryable:
 
     def test_unknown_exc_not_retryable(self) -> None:
         assert _is_retryable(ValueError("nope")) is False
+
+
+# ---------------------------------------------------------------------------
+# Provider swap
+# ---------------------------------------------------------------------------
+
+
+class TestProviderSwap:
+    @pytest.mark.asyncio
+    async def test_swap_from_openai_to_ollama(self) -> None:
+        openai_cfg = LLMConfig(provider="openai", api_key="sk-test")
+        ollama_cfg = LLMConfig(provider="ollama")
+
+        assert openai_cfg.provider == "openai"
+        assert ollama_cfg.provider == "ollama"

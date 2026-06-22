@@ -149,6 +149,10 @@ class TestAnswerAccuracy:
     def test_empty_input(self) -> None:
         assert answer_accuracy([], [], []) == 0.0
 
+    def test_model_abstains_when_should_answer(self) -> None:
+        qa = _qa([], answerable=False)
+        assert answer_accuracy([qa], [False], [True]) == 0.0
+
 
 # ---------------------------------------------------------------------------
 # correct_abstention

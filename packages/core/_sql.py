@@ -9,12 +9,18 @@ drift apart.
 UPSERT_CHUNK_SQL = (
     "INSERT INTO chunks (id, paper_id, ordinal, section, text, "
     "char_start, char_end, page, token_count, content_hash) "
-    "VALUES ($1::uuid, $2::uuid, 0, NULL, $3, "
-    "NULL, NULL, NULL, NULL, '') "
+    "VALUES ($1::uuid, $2::uuid, $3::INT, $4::TEXT, $5::TEXT, "
+    "$6::INT, $7::INT, $8::INT, $9::INT, $10::TEXT) "
     "ON CONFLICT (id) DO UPDATE "
     "SET text = EXCLUDED.text, "
     "    section = EXCLUDED.section, "
-    "    paper_id = EXCLUDED.paper_id"
+    "    paper_id = EXCLUDED.paper_id, "
+    "    ordinal = EXCLUDED.ordinal, "
+    "    char_start = EXCLUDED.char_start, "
+    "    char_end = EXCLUDED.char_end, "
+    "    page = EXCLUDED.page, "
+    "    token_count = EXCLUDED.token_count, "
+    "    content_hash = EXCLUDED.content_hash"
 )
 
 UPSERT_EMBEDDING_SQL = (

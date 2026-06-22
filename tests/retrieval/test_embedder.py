@@ -1,11 +1,12 @@
 """Tests for BgeM3Embedder — model is mocked; no real inference."""
 
+import math
 from collections.abc import Sequence
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.errors import EmbeddingError
+from core.errors import EmbeddingError, RCError
 from retrieval.embedder import BgeM3Embedder
 
 
@@ -73,6 +74,42 @@ class TestBgeM3Embedder:
         e = BgeM3Embedder(model=mock_sentence_transformer)
         with pytest.raises(EmbeddingError, match="BGE-M3 encoding failed"):
             await e.embed(["test"])
+
+    @pytest.mark.asyncio
+    async def test_embedding_error_is_rc_error(
+        self, mock_sentence_transformer: MagicMock,
+    ) -> None:
+        mock_sentence_transformer.encode.side_effect = RuntimeError("fail")
+        e = BgeM3Embedder(model=mock_sentence_transformer)
+        with pytest.raises(RCError):
+            await e.embed(["fail"])
+
+    @pytest.mark.asyncio
+    async def test_vectors_are_unit_length(
+        self, mock_sentence_transformer: MagicMock,
+    ) -> None:
+        mock_sentence_transformer.encode.return_value = [
+            MockNumpyArray([1.0, 0.0]),
+            MockNumpyArray([0.0, 1.0]),
+        ]
+        e = BgeM3Embedder(model=mock_sentence_transformer)
+        vectors = await e.embed(["a", "b"])
+        for v in vectors:
+            norm = math.sqrt(sum(x * x for x in v))
+            assert norm == pytest.approx(1.0, abs=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_no_zero_vectors(
+        self, mock_sentence_transformer: MagicMock,
+    ) -> None:
+        mock_sentence_transformer.encode.return_value = [
+            MockNumpyArray([1.0, 0.0]),
+        ]
+        e = BgeM3Embedder(model=mock_sentence_transformer)
+        vectors = await e.embed(["test"])
+        v = vectors[0]
+        norm = math.sqrt(sum(x * x for x in v))
+        assert norm > 0
 
     @pytest.mark.asyncio
     async def test_embed_unicode(self, mock_sentence_transformer: MagicMock) -> None:

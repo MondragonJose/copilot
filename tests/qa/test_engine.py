@@ -1,15 +1,13 @@
 from collections.abc import Sequence
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.errors import EmbeddingError
 from core.interfaces import Embedder, LLMClient, Retriever
 from core.models import (
     ChunkRef,
     Claim,
     ClaimVerdict,
-    QAResult,
     ScoredChunk,
 )
 from qa._nli import judge_entailment
@@ -20,7 +18,7 @@ from qa.engine import (
     _format_context,
     _parse_citations,
 )
-
+from qa.llm import LLMError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -230,6 +228,28 @@ class TestAnswer:
         )
         result = await eng.answer("q")
         assert result.answerable is False
+
+    @pytest.mark.asyncio
+    async def test_llm_error_returns_abstention(
+        self, mock_retriever: Retriever, mock_embedder: Embedder,
+        mock_llm: LLMClient,
+    ) -> None:
+        scored = [_make_scored("c1", "The sky is blue.")]
+        mock_embedder.embed = AsyncMock(return_value=[[0.1]])
+        mock_retriever.search_dense = AsyncMock(return_value=scored)
+        mock_llm.generate = AsyncMock(
+            side_effect=LLMError("LLM unavailable"),
+        )
+
+        eng = QAEngine(
+            retriever=mock_retriever, llm=mock_llm, embedder=mock_embedder,
+        )
+        result = await eng.answer("What color is the sky?")
+
+        assert result.answerable is False
+        assert result.answer is None
+        assert result.claims == []
+        assert result.verdicts == []
 
     @pytest.mark.asyncio
     async def test_null_k_uses_default(
@@ -500,6 +520,32 @@ class TestParseCitations:
         claims = _parse_citations("## Citations\n[1] chunk: c1 quote: \"x\"", {})
         assert claims == []
 
+    def test_empty_citations_section_is_empty(self) -> None:
+        answer = "Answer.\n\n## Citations\n\n"
+        claims = _parse_citations(answer, {1: "c-attn"})
+        assert len(claims) == 0
+
+    def test_handles_extra_whitespace_in_quotes(self) -> None:
+        answer = """Claim [1].
+
+## Citations
+[1]   chunk:   c-attn   quote:   "Some text"
+"""
+        claims = _parse_citations(answer, {1: "c-attn"})
+        assert len(claims) == 1
+        assert claims[0].quoted_span == "Some text"
+
+    def test_quoted_span_matches_claim_text(self) -> None:
+        answer = """The model uses attention [1].
+
+## Citations
+[1] chunk: c-attn quote: "Transformers rely on self-attention to model"
+"""
+        claims = _parse_citations(answer, {1: "c-attn"})
+        assert len(claims) == 1
+        assert claims[0].text == "Transformers rely on self-attention to model"
+        assert claims[0].quoted_span == "Transformers rely on self-attention to model"
+
 
 class TestSplitClaimVerdictPairs:
     def test_empty(self) -> None:
@@ -513,3 +559,289 @@ class TestSplitClaimVerdictPairs:
         c, v = QAEngine._split_claim_verdict_pairs([(cl, cv)])
         assert c == [cl]
         assert v == [cv]
+
+
+# ---------------------------------------------------------------------------
+# Integration-style fixtures for blueprint branch tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def corpus() -> list[ScoredChunk]:
+    return [
+        ScoredChunk(
+            chunk=ChunkRef(
+                chunk_id="c-attn",
+                paper_id="p1",
+                text="Transformers rely on self-attention to model "
+                     "relationships between all tokens in a sequence.",
+                section="Introduction",
+                page=1,
+                char_start=0,
+                char_end=90,
+            ),
+            score=0.92,
+            channel="dense",
+        ),
+        ScoredChunk(
+            chunk=ChunkRef(
+                chunk_id="c-ml",
+                paper_id="p1",
+                text="Machine learning models learn patterns from data "
+                     "by minimizing a loss function.",
+                section="Background",
+                page=2,
+                char_start=0,
+                char_end=85,
+            ),
+            score=0.88,
+            channel="dense",
+        ),
+        ScoredChunk(
+            chunk=ChunkRef(
+                chunk_id="c-rlhf",
+                paper_id="p2",
+                text="RLHF aligns language models with human preferences "
+                     "through reinforcement learning from human feedback.",
+                section="Method",
+                page=3,
+                char_start=0,
+                char_end=120,
+            ),
+            score=0.85,
+            channel="dense",
+        ),
+    ]
+
+
+class _FakeEmbedder:
+    async def embed(self, texts: list[str]) -> list[Sequence[float]]:
+        return [[0.1] * 4 for _ in texts]
+
+
+class _FakeRetriever:
+    def __init__(self, chunks: list[ScoredChunk]) -> None:
+        self._chunks = chunks
+
+    async def search_dense(
+        self,
+        query_vector: Sequence[float],
+        k: int,
+        paper_ids: Sequence[str] | None = None,
+    ) -> list[ScoredChunk]:
+        return self._chunks[:k]
+
+
+class _FakeLLM:
+    def __init__(
+        self,
+        answer: str,
+        entailment_score: str | list[str] = "0.9",
+    ) -> None:
+        self._answer = answer
+        self._entailment_scores = (
+            [entailment_score]
+            if isinstance(entailment_score, str)
+            else entailment_score
+        )
+        self._nli_calls = 0
+
+    async def generate(
+        self,
+        prompt: str,
+        system: str | None = None,
+    ) -> str:
+        if system and "NLI" in system:
+            idx = min(self._nli_calls, len(self._entailment_scores) - 1)
+            self._nli_calls += 1
+            return self._entailment_scores[idx]
+        return self._answer
+
+
+# ---------------------------------------------------------------------------
+# Blueprint §5 verification policy — one test per branch
+# ---------------------------------------------------------------------------
+
+
+class TestDropBranch:
+    @pytest.mark.asyncio
+    async def test_drops_claim_with_fabricated_span(self) -> None:
+        corpus_1 = [
+            ScoredChunk(
+                chunk=ChunkRef(
+                    chunk_id="c1", paper_id="p1",
+                    text="The sky is blue on clear days.",
+                    section=None, page=None, char_start=None, char_end=None,
+                ),
+                score=0.9, channel="dense",
+            ),
+        ]
+        answer = """Claim [1].
+
+## Citations
+[1] chunk: c1 quote: "This span does not exist in the chunk"
+"""
+        llm = _FakeLLM(answer)
+        engine = QAEngine(
+            retriever=_FakeRetriever(corpus_1),
+            llm=llm,
+            embedder=_FakeEmbedder(),
+        )
+
+        result = await engine.answer("Q?")
+
+        assert len(result.claims) == 0
+        assert len(result.verdicts) == 0
+        assert not result.answerable
+        assert result.answer == "No hay soporte suficiente"
+
+
+class TestRetryBranch:
+    @pytest.mark.asyncio
+    async def test_retry_with_more_context_passes(self) -> None:
+        corpus_big = [
+            ScoredChunk(
+                chunk=ChunkRef(
+                    chunk_id="c1", paper_id="p1",
+                    text="Attention is a core mechanism.",
+                    section=None, page=None, char_start=None, char_end=None,
+                ),
+                score=0.9, channel="dense",
+            ),
+            ScoredChunk(
+                chunk=ChunkRef(
+                    chunk_id="c2", paper_id="p1",
+                    text="It computes weighted sums of values.",
+                    section=None, page=None, char_start=None, char_end=None,
+                ),
+                score=0.8, channel="dense",
+            ),
+            ScoredChunk(
+                chunk=ChunkRef(
+                    chunk_id="c3", paper_id="p1",
+                    text="Transformers use multi-head attention.",
+                    section=None, page=None, char_start=None, char_end=None,
+                ),
+                score=0.7, channel="dense",
+            ),
+        ]
+        first_answer = """Claim [1].
+
+## Citations
+[1] chunk: c1 quote: "Attention is a core mechanism."
+"""
+        llm = _FakeLLM(
+            answer=first_answer,
+            entailment_score=["0.3", "0.9", "0.9"],
+        )
+        engine = QAEngine(
+            retriever=_FakeRetriever(corpus_big),
+            llm=llm,
+            embedder=_FakeEmbedder(),
+        )
+
+        result = await engine.answer("How does attention work?", k=1)
+
+        assert result.answerable
+        assert len(result.claims) > 0
+        assert all(v.supported for v in result.verdicts)
+
+
+class TestDegradeBranch:
+    @pytest.mark.asyncio
+    async def test_degrades_still_low_claim_after_retry(self) -> None:
+        corpus_2 = [
+            ScoredChunk(
+                chunk=ChunkRef(
+                    chunk_id="c1", paper_id="p1",
+                    text="The sky is blue.",
+                    section=None, page=None, char_start=None, char_end=None,
+                ),
+                score=0.9, channel="dense",
+            ),
+            ScoredChunk(
+                chunk=ChunkRef(
+                    chunk_id="c2", paper_id="p1",
+                    text="Clouds are white.",
+                    section=None, page=None, char_start=None, char_end=None,
+                ),
+                score=0.8, channel="dense",
+            ),
+        ]
+        first_answer = """Claim [1].
+
+## Citations
+[1] chunk: c1 quote: "The sky is blue."
+"""
+        llm = _FakeLLM(
+            answer=first_answer,
+            entailment_score=["0.3", "0.3"],
+        )
+        engine = QAEngine(
+            retriever=_FakeRetriever(corpus_2),
+            llm=llm,
+            embedder=_FakeEmbedder(),
+        )
+
+        result = await engine.answer("What colour is the sky?", k=1)
+
+        assert len(result.claims) >= 1
+        v = result.verdicts[0]
+        assert not v.supported
+        assert v.reason == "insufficient_evidence"
+        assert v.score == 0.3
+        assert not result.answerable
+        assert result.answer == "No hay soporte suficiente"
+
+
+class TestAbstainBranch:
+    @pytest.mark.asyncio
+    async def test_abstains_when_no_supported_claims(self) -> None:
+        corpus_1 = [
+            ScoredChunk(
+                chunk=ChunkRef(
+                    chunk_id="c1", paper_id="p1",
+                    text="Does not matter.",
+                    section=None, page=None, char_start=None, char_end=None,
+                ),
+                score=0.9, channel="dense",
+            ),
+        ]
+        llm = _FakeLLM("No relevant information.\n\n## Citations\n")
+        engine = QAEngine(
+            retriever=_FakeRetriever(corpus_1),
+            llm=llm,
+            embedder=_FakeEmbedder(),
+        )
+
+        result = await engine.answer("Unknown question?")
+
+        assert not result.answerable
+        assert result.answer == "No hay soporte suficiente"
+        assert result.claims == []
+        assert result.verdicts == []
+
+    @pytest.mark.asyncio
+    async def test_abstains_when_all_claims_dropped_or_degraded(
+        self, corpus: list[ScoredChunk],
+    ) -> None:
+        answer = """Claim [1] and [2].
+
+## Citations
+[1] chunk: c-attn quote: "Fabricated span does not exist"
+[2] chunk: c-ml quote: "Machine learning models learn patterns from data"
+"""
+        llm = _FakeLLM(answer, entailment_score="0.3")
+        engine = QAEngine(
+            retriever=_FakeRetriever(corpus),
+            llm=llm,
+            embedder=_FakeEmbedder(),
+        )
+
+        result = await engine.answer("Q?")
+
+        assert not result.answerable
+        assert result.answer == "No hay soporte suficiente"
+        assert len(result.claims) >= 1
+        assert all(not v.supported for v in result.verdicts)
+        assert any(v.reason == "insufficient_evidence" for v in result.verdicts)

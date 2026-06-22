@@ -20,13 +20,13 @@ from core.models import (
 class Retriever(Protocol):
     """Vector + lexical search over persisted chunks."""
 
-    def upsert(self, items: Sequence[UpsertChunk]) -> int:
+    async def upsert(self, items: Sequence[UpsertChunk]) -> int:
         """Insert or update chunks and vectors idempotently (by chunk_id).
         Returns the number of affected rows.
         """
         ...
 
-    def search_dense(
+    async def search_dense(
         self,
         query_vector: Sequence[float],
         k: int,
@@ -35,7 +35,7 @@ class Retriever(Protocol):
         """k-NN cosine similarity search. Optional filter by paper subset."""
         ...
 
-    def search_lexical(
+    async def search_lexical(
         self,
         query_text: str,
         k: int,
@@ -44,15 +44,15 @@ class Retriever(Protocol):
         """Lexical (BM25 / trigram) search. Optional filter by paper subset."""
         ...
 
-    def delete_by_paper(self, paper_id: str) -> int:
+    async def delete_by_paper(self, paper_id: str) -> int:
         """Remove all chunks and vectors for a given paper."""
         ...
 
-    def count(self) -> int:
+    async def count(self) -> int:
         """Total number of indexed chunks."""
         ...
 
-    def health(self) -> bool:
+    async def health(self) -> bool:
         """Whether the underlying store is reachable and responsive."""
         ...
 

@@ -88,6 +88,29 @@ class TestGoldsetLoader:
         assert gold == []
         Path(path).unlink()
 
+    def test_blank_lines_between_rows(self) -> None:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False,
+        ) as f:
+            f.write("\n")
+            f.write(json.dumps({
+                "question": "Q1", "answerable": True, "gold_answer": "A1",
+                "gold_span": "span1", "chunk_id": "c1", "paper_id": "p1",
+                "gold_relevant_chunk_ids": [],
+            }) + "\n")
+            f.write("\n")
+            f.write("\n")
+            f.write(json.dumps({
+                "question": "Q2", "answerable": False, "gold_answer": None,
+                "gold_span": "", "chunk_id": "c2", "paper_id": "p2",
+                "gold_relevant_chunk_ids": [],
+            }) + "\n")
+            p = f.name
+        loader = GoldsetLoader(_resolver({"c1": "span1 here", "c2": "x"}))
+        gold = loader.load(p)
+        assert len(gold) == 2
+        Path(p).unlink()
+
     def test_invalid_json(self) -> None:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".jsonl", delete=False,

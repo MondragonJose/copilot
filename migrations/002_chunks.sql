@@ -2,7 +2,7 @@
 -- Research Copilot — Chunks table (MVP v0.1)
 -- Un chunk = unidad recuperable con procedencia EXACTA (clave para citas a nivel de pasaje).
 
-CREATE TABLE chunks (
+CREATE TABLE IF NOT EXISTS chunks (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     paper_id      UUID NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
     ordinal       INT NOT NULL,                 -- orden dentro del paper
@@ -16,5 +16,5 @@ CREATE TABLE chunks (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (paper_id, ordinal)
 );
-CREATE INDEX idx_chunks_paper ON chunks (paper_id);
-CREATE INDEX idx_chunks_text_trgm ON chunks USING gin (text gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_chunks_paper ON chunks (paper_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON chunks USING gin (text gin_trgm_ops);

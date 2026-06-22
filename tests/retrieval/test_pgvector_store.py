@@ -17,6 +17,18 @@ def mock_pool() -> Pool:
     pool.execute = AsyncMock(return_value="INSERT 1")
     pool.fetch = AsyncMock(return_value=[])
     pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_tx = AsyncMock()
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock(return_value="SET")
+    mock_conn.transaction = MagicMock(return_value=mock_tx)
+
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__.return_value = mock_conn
+
+    pool.connection = MagicMock(return_value=mock_cm)
+
     return pool
 
 
@@ -132,7 +144,8 @@ class TestSearchDense:
             "char_start": None, "char_end": None,
             "score": 0.0,
         }.get(k) if isinstance(k, str) else None
-        mock_pool.fetch = AsyncMock(return_value=[mock_row])
+        conn = mock_pool.connection.return_value.__aenter__.return_value
+        conn.fetch = AsyncMock(return_value=[mock_row])
 
         results = await store.search_dense([0.1, 0.2], k=5)
         assert len(results) == 1
@@ -145,7 +158,7 @@ class TestSearchDense:
                                          mock_pool: Pool) -> None:
         results = await store.search_dense([0.1], k=0)
         assert results == []
-        mock_pool.fetch.assert_not_called()
+        mock_pool.connection.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_k_negative_returns_empty(self, store: PgVectorStore,
@@ -164,7 +177,8 @@ class TestSearchDense:
             "char_start": None, "char_end": None,
             "score": -0.5,
         }.get(k) if isinstance(k, str) else None
-        mock_pool.fetch = AsyncMock(return_value=[mock_row])
+        conn = mock_pool.connection.return_value.__aenter__.return_value
+        conn.fetch = AsyncMock(return_value=[mock_row])
 
         results = await store.search_dense([0.1], k=5)
         assert results[0].score == -0.5  # clamping is SQL-side, mock returns raw
@@ -172,17 +186,19 @@ class TestSearchDense:
     @pytest.mark.asyncio
     async def test_with_paper_filter(self, store: PgVectorStore,
                                       mock_pool: Pool) -> None:
-        mock_pool.fetch = AsyncMock(return_value=[])
+        conn = mock_pool.connection.return_value.__aenter__.return_value
+        conn.fetch = AsyncMock(return_value=[])
         await store.search_dense([0.1], k=5, paper_ids=["p1", "p2"])
-        # Should pass paper_ids as $4 in SQL
-        call_args = mock_pool.fetch.call_args
+        # Should pass paper_ids as $3 in SQL
+        call_args = conn.fetch.call_args
         assert call_args is not None
-        assert "ANY" in call_args[0][0]
+        assert "ANY($3::uuid[])" in call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_empty_vector(self, store: PgVectorStore,
                                  mock_pool: Pool) -> None:
-        mock_pool.fetch = AsyncMock(return_value=[])
+        conn = mock_pool.connection.return_value.__aenter__.return_value
+        conn.fetch = AsyncMock(return_value=[])
         results = await store.search_dense([], k=5)
         assert results == []
 

@@ -167,6 +167,11 @@ class TestSplitText:
         assert len(result) == 1
         assert result[0][0] == "übercool"
 
+    def test_step_never_zero(self) -> None:
+        text = "x" * 100
+        result = _split_text(text, 0, 50, 50)  # overlap == window
+        assert len(result) == 2  # should still advance
+
 
 class TestEstimateTokens:
     def test_normal(self) -> None:
@@ -200,3 +205,57 @@ class TestSpanHelpers:
 
     def test_get_span_page_pymupdf_missing(self) -> None:
         assert _get_span_page_pymupdf({"text": "x"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Hash uniqueness
+# ---------------------------------------------------------------------------
+
+
+class TestContentHash:
+    def test_hash_is_sha256(self) -> None:
+        paper = _make_paper(sections=[
+            {"heading": "A", "text": "hello",
+             "char_start": 0, "char_end": 5},
+        ])
+        chunk = chunk_document(paper, "hello")[0]
+        assert len(chunk.content_hash) == 64
+
+    def test_same_text_same_hash(self) -> None:
+        text = "identical text"
+        paper = _make_paper(sections=[
+            {"heading": "A", "text": text,
+             "char_start": 0, "char_end": len(text)},
+        ])
+        c1 = chunk_document(paper, text)[0]
+        c2 = chunk_document(paper, text)[0]
+        assert c1.content_hash == c2.content_hash
+
+    def test_different_text_different_hash(self) -> None:
+        paper = _make_paper(sections=[
+            {"heading": "A", "text": "aaa",
+             "char_start": 0, "char_end": 3},
+            {"heading": "B", "text": "bbb",
+             "char_start": 4, "char_end": 7},
+        ])
+        chunks = chunk_document(paper, "aaa\n\nbbb")
+        assert len(chunks) >= 2
+        assert chunks[0].content_hash != chunks[1].content_hash
+
+
+# ---------------------------------------------------------------------------
+# No known source in meta
+# ---------------------------------------------------------------------------
+
+
+class TestNoKnownMeta:
+    def test_empty_meta_returns_empty(self) -> None:
+        paper = _make_paper()
+        chunks = chunk_document(paper, "")
+        assert chunks == []
+
+    def test_unknown_meta_keys_ignored(self) -> None:
+        paper = _make_paper()
+        paper.meta["unknown"] = [1, 2, 3]
+        chunks = chunk_document(paper, "text")
+        assert chunks == []

@@ -10,6 +10,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 class GoldsetError(Exception):
@@ -103,7 +104,7 @@ class GoldsetLoader:
 
     def _parse_row(self, line: str, lineno: int) -> GoldRow:
         try:
-            data: dict = json.loads(line)
+            data: dict[str, Any] = json.loads(line)
         except json.JSONDecodeError as exc:
             raise GoldsetError(
                 f"line {lineno}: invalid JSON — {exc}",

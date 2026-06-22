@@ -9,7 +9,7 @@ Guarded regressions:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,7 +30,7 @@ class TestSearchDenseKClamp:
         store = PgVectorStore(pool)
         result = await store.search_dense([0.1, 0.2], k=0)
         assert result == []
-        pool.fetch.assert_not_called()
+        pool.connection.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_k_negative_returns_empty(self) -> None:
@@ -42,14 +42,21 @@ class TestSearchDenseKClamp:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_k_positive_calls_fetch(self) -> None:
+    async def test_k_positive_calls_connection(self) -> None:
         from retrieval.pgvector_store import PgVectorStore
 
         pool = AsyncMock()
-        pool.fetch.return_value = []
+        mock_tx = AsyncMock()
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=[])
+        conn.execute = AsyncMock(return_value="SET")
+        conn.transaction = MagicMock(return_value=mock_tx)
+        cm = AsyncMock()
+        cm.__aenter__.return_value = conn
+        pool.connection = MagicMock(return_value=cm)
         store = PgVectorStore(pool)
         result = await store.search_dense([0.1, 0.2], k=10)
-        pool.fetch.assert_called_once()
+        pool.connection.assert_called_once()
         assert result == []
 
     @pytest.mark.asyncio
@@ -58,10 +65,17 @@ class TestSearchDenseKClamp:
         from retrieval.pgvector_store import PgVectorStore
 
         pool = AsyncMock()
-        pool.fetch.return_value = []
+        mock_tx = AsyncMock()
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=[])
+        conn.execute = AsyncMock(return_value="SET")
+        conn.transaction = MagicMock(return_value=mock_tx)
+        cm = AsyncMock()
+        cm.__aenter__.return_value = conn
+        pool.connection = MagicMock(return_value=cm)
         store = PgVectorStore(pool)
         result = await store.search_dense([0.1, 0.2], k=1)
-        pool.fetch.assert_called_once()
+        pool.connection.assert_called_once()
         assert result == []
 
 
@@ -108,6 +122,7 @@ class TestScoreClamping:
         from retrieval.pgvector_store import _DENSE_SELECT
 
         assert "GREATEST(0.0, LEAST(1.0," in _DENSE_SELECT
+        assert "$1::vector" in _DENSE_SELECT
 
     def test_lexical_select_no_clamp(self) -> None:
         """Similarity() natively returns [0, 1], so no clamp needed."""
@@ -122,10 +137,17 @@ class TestScoreClamping:
         from retrieval.pgvector_store import PgVectorStore
 
         pool = AsyncMock()
-        pool.fetch.return_value = [
+        mock_tx = AsyncMock()
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=[
             {"id": "c1", "paper_id": "p1", "text": "t", "section": None,
              "page": 1, "char_start": 0, "char_end": 1, "score": 1.2},
-        ]
+        ])
+        conn.execute = AsyncMock(return_value="SET")
+        conn.transaction = MagicMock(return_value=mock_tx)
+        cm = AsyncMock()
+        cm.__aenter__.return_value = conn
+        pool.connection = MagicMock(return_value=cm)
         store = PgVectorStore(pool)
         result = await store.search_dense([0.1, 0.2], k=10)
         assert result[0].score == 1.2
@@ -135,10 +157,17 @@ class TestScoreClamping:
         from retrieval.pgvector_store import PgVectorStore
 
         pool = AsyncMock()
-        pool.fetch.return_value = [
+        mock_tx = AsyncMock()
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=[
             {"id": "c1", "paper_id": "p1", "text": "t", "section": None,
              "page": 1, "char_start": 0, "char_end": 1, "score": -0.5},
-        ]
+        ])
+        conn.execute = AsyncMock(return_value="SET")
+        conn.transaction = MagicMock(return_value=mock_tx)
+        cm = AsyncMock()
+        cm.__aenter__.return_value = conn
+        pool.connection = MagicMock(return_value=cm)
         store = PgVectorStore(pool)
         result = await store.search_dense([0.1, 0.2], k=10)
         assert result[0].score == -0.5

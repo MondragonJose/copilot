@@ -20,11 +20,12 @@ import asyncio
 import re
 from collections.abc import Sequence
 
-_RETRY_K_MULTIPLIER = 2
-
 from core.interfaces import Embedder, LLMClient, Retriever
 from core.models import Claim, ClaimVerdict, QAResult, ScoredChunk
 from qa._nli import judge_entailment
+from qa.llm import LLMError
+
+_RETRY_K_MULTIPLIER = 2
 
 _SYSTEM_PROMPT = """You are a helpful research assistant. Answer the user's \
 question based solely on the provided context chunks.
@@ -46,6 +47,17 @@ If the question cannot be answered from the context, say so and leave the \
 ## Citations section empty."""
 
 
+
+
+def _abstain(question: str) -> QAResult:
+    """Return a safe abstention ``QAResult`` (no answer, no claims)."""
+    return QAResult(
+        question=question,
+        answer=None,
+        claims=[],
+        verdicts=[],
+        answerable=False,
+    )
 
 
 class QAEngine:
@@ -97,37 +109,27 @@ class QAEngine:
         two-layer verification → drop / retry / degrade / abstain.
         """
         if not question.strip():
-            return QAResult(
-                question=question,
-                answer=None,
-                claims=[],
-                verdicts=[],
-                answerable=False,
-            )
+            return _abstain(question)
 
         top_k = k or self._k
 
         vectors = await self._embedder.embed([question])
-        scored = await self._retriever.search_dense(vectors[0], k=top_k)  # type: ignore[misc]
+        scored = await self._retriever.search_dense(vectors[0], k=top_k)
 
         if not scored:
-            return QAResult(
+            return _abstain(question)
+
+        try:
+            answer_text, claims = await self._generate(question, scored)
+            return await self._apply_policy(
                 question=question,
-                answer=None,
-                claims=[],
-                verdicts=[],
-                answerable=False,
+                answer_text=answer_text,
+                claims=claims,
+                scored=scored,
+                top_k=top_k,
             )
-
-        answer_text, claims = await self._generate(question, scored)
-
-        return await self._apply_policy(
-            question=question,
-            answer_text=answer_text,
-            claims=claims,
-            scored=scored,
-            top_k=top_k,
-        )
+        except LLMError:
+            return _abstain(question)
 
     # ------------------------------------------------------------------
     # Generation
@@ -258,7 +260,7 @@ class QAEngine:
         doubled_k = top_k * _RETRY_K_MULTIPLIER
         vectors = await self._embedder.embed([question])
         scored2 = await self._retriever.search_dense(
-            vectors[0], k=doubled_k,  # type: ignore[misc]
+            vectors[0], k=doubled_k,
         )
         if not scored2:
             claims2, verdicts2 = self._split_claim_verdict_pairs(

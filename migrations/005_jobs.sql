@@ -2,7 +2,7 @@
 -- Research Copilot — Jobs table (MVP v0.1)
 -- Pipeline async, §4
 
-CREATE TABLE jobs (
+CREATE TABLE IF NOT EXISTS jobs (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     kind          TEXT NOT NULL,                 -- 'ingest_pdf' | 'reindex' | 'enrich_meta'
     status        TEXT NOT NULL DEFAULT 'queued',-- queued|running|done|failed|dead
@@ -15,4 +15,4 @@ CREATE TABLE jobs (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_jobs_status ON jobs (status, kind);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status, kind);

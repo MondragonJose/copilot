@@ -1,4 +1,4 @@
-"""Tests for eval.run — EvalReport, check_gate, write_report."""
+"""Tests for eval.run — EvalReport, check_gate, write_report, helpers."""
 
 import json
 import tempfile
@@ -12,7 +12,10 @@ from eval.run import (
     EvalReport,
     FAITHFULNESS_THRESHOLD,
     ABSTENTION_THRESHOLD,
+    RECALL_K,
     check_gate,
+    compute_retrieval_metrics,
+    goldset_note,
     write_report,
 )
 
@@ -106,6 +109,15 @@ class TestCheckGate:
         r = EvalReport(
             timestamp="t", citation_faithfulness=0.5,
             correct_abstention=0.5, answer_accuracy=0.5,
+            recall_at_k=None, mrr=None,
+            litqa2_accuracy=None, litqa2_precision_at_answered=None,
+        )
+        assert check_gate(r) == "FAIL"
+
+    def test_just_below_faithfulness(self) -> None:
+        r = EvalReport(
+            timestamp="t", citation_faithfulness=0.949,
+            correct_abstention=0.90, answer_accuracy=0.5,
             recall_at_k=None, mrr=None,
             litqa2_accuracy=None, litqa2_precision_at_answered=None,
         )
@@ -287,4 +299,193 @@ class TestMain:
             msys.exit.assert_called_once_with(1)
 
 
+class TestComputeRetrievalMetrics:
+    """compute_retrieval_metrics — recall@k and MRR from synthetic rankings."""
 
+    @staticmethod
+    def _scored(chunk_id: str) -> MagicMock:
+        return MagicMock(chunk=MagicMock(chunk_id=chunk_id))
+
+    @pytest.mark.asyncio
+    async def test_all_relevant_retrieved(self) -> None:
+        """Perfect retrieval: every gold chunk in top-k."""
+        from eval.goldset import GoldRow
+        rows = [
+            GoldRow(
+                question="Q1?", answerable=True, gold_answer="A1",
+                gold_span="span1", chunk_id="c1", paper_id="p1",
+                gold_relevant_chunk_ids=("c1", "c2"),
+            ),
+        ]
+        retriever = MagicMock()
+        retriever.search_dense = AsyncMock(return_value=[
+            self._scored("c1"),
+            self._scored("c2"),
+        ])
+        embedder = MagicMock()
+        embedder.embed = AsyncMock(return_value=[[0.1, 0.2]])
+
+        recall, mrr = await compute_retrieval_metrics(rows, retriever, embedder, k=10)
+        assert recall == 1.0
+        assert mrr == 1.0
+
+    @pytest.mark.asyncio
+    async def test_partial_relevant_retrieved(self) -> None:
+        """Only half of gold chunks in top-k."""
+        from eval.goldset import GoldRow
+        rows = [
+            GoldRow(
+                question="Q1?", answerable=True, gold_answer="A1",
+                gold_span="span1", chunk_id="c1", paper_id="p1",
+                gold_relevant_chunk_ids=("c1", "c2", "c3"),
+            ),
+        ]
+        retriever = MagicMock()
+        retriever.search_dense = AsyncMock(return_value=[
+            self._scored("c1"),
+            self._scored("c4"),
+        ])
+        embedder = MagicMock()
+        embedder.embed = AsyncMock(return_value=[[0.1, 0.2]])
+
+        recall, mrr = await compute_retrieval_metrics(rows, retriever, embedder, k=10)
+        assert recall == 1.0 / 3.0
+        assert mrr == 1.0  # first result is relevant
+
+    @pytest.mark.asyncio
+    async def test_no_relevant_retrieved(self) -> None:
+        """No gold chunks retrieved."""
+        from eval.goldset import GoldRow
+        rows = [
+            GoldRow(
+                question="Q1?", answerable=True, gold_answer="A1",
+                gold_span="span1", chunk_id="c1", paper_id="p1",
+                gold_relevant_chunk_ids=("c2",),
+            ),
+        ]
+        retriever = MagicMock()
+        retriever.search_dense = AsyncMock(return_value=[
+            self._scored("c1"),
+            self._scored("c3"),
+        ])
+        embedder = MagicMock()
+        embedder.embed = AsyncMock(return_value=[[0.1, 0.2]])
+
+        recall, mrr = await compute_retrieval_metrics(rows, retriever, embedder, k=10)
+        assert recall == 0.0
+        assert mrr == 0.0
+
+    @pytest.mark.asyncio
+    async def test_multiple_questions_mrr(self) -> None:
+        """MRR averaged over multiple queries."""
+        from eval.goldset import GoldRow
+        rows = [
+            GoldRow(
+                question="Q1?", answerable=True, gold_answer="A1",
+                gold_span="span1", chunk_id="c1", paper_id="p1",
+                gold_relevant_chunk_ids=("a",),
+            ),
+            GoldRow(
+                question="Q2?", answerable=True, gold_answer="A2",
+                gold_span="span2", chunk_id="c2", paper_id="p1",
+                gold_relevant_chunk_ids=("z",),
+            ),
+        ]
+        retriever = MagicMock()
+        retriever.search_dense = AsyncMock(side_effect=[
+            [self._scored("x"), self._scored("a"), self._scored("y")],
+            [self._scored("z")],
+        ])
+        embedder = MagicMock()
+        embedder.embed = AsyncMock(return_value=[[0.1, 0.2]])
+
+        recall, mrr = await compute_retrieval_metrics(rows, retriever, embedder, k=10)
+        # Q1: 1 relevant (a), retrieved [x,a,y] → recall=1/1=1.0, RR=1/2
+        # Q2: 1 relevant (z), retrieved [z] → recall=1/1=1.0, RR=1/1
+        # Avg recall = 1.0, MRR = (0.5 + 1.0)/2 = 0.75
+        assert recall == 1.0
+        assert mrr == 0.75
+
+    @pytest.mark.asyncio
+    async def test_no_answerable_rows_returns_none(self) -> None:
+        """When no rows have gold_relevant_chunk_ids, returns None, None."""
+        from eval.goldset import GoldRow
+        rows = [
+            GoldRow(
+                question="Q?", answerable=False, gold_answer=None,
+                gold_span="", chunk_id="c1", paper_id="p1",
+                gold_relevant_chunk_ids=(),
+            ),
+        ]
+        recall, mrr = await compute_retrieval_metrics(
+            rows, MagicMock(), MagicMock(), k=10,
+        )
+        assert recall is None
+        assert mrr is None
+
+
+class TestGoldsetNote:
+    """goldset_note — insufficiency detection."""
+
+    def test_adequate_size_returns_empty(self) -> None:
+        assert goldset_note(50) == ""
+
+    def test_above_minimum_returns_empty(self) -> None:
+        assert goldset_note(100) == ""
+
+    def test_below_minimum_returns_note(self) -> None:
+        note = goldset_note(3)
+        assert "INSUFFICIENT EVIDENCE" in note
+        assert "3" in note
+        assert "50" in note
+
+    def test_at_boundary_49_returns_note(self) -> None:
+        note = goldset_note(49)
+        assert "INSUFFICIENT EVIDENCE" in note
+
+
+class TestEvalReportGoldsetFields:
+    """EvalReport goldset_size / goldset_note defaults."""
+
+    def test_defaults(self) -> None:
+        r = EvalReport(
+            timestamp="t", citation_faithfulness=0.95,
+            correct_abstention=0.90, answer_accuracy=0.5,
+            recall_at_k=None, mrr=None,
+            litqa2_accuracy=None, litqa2_precision_at_answered=None,
+        )
+        assert r.goldset_size == 0
+        assert r.goldset_note == ""
+
+    def test_explicit_values(self) -> None:
+        r = EvalReport(
+            timestamp="t", citation_faithfulness=0.95,
+            correct_abstention=0.90, answer_accuracy=0.5,
+            recall_at_k=0.9, mrr=0.8,
+            litqa2_accuracy=None, litqa2_precision_at_answered=None,
+            goldset_size=50, goldset_note="INSUFFICIENT EVIDENCE",
+        )
+        assert r.goldset_size == 50
+        assert "INSUFFICIENT EVIDENCE" in r.goldset_note
+
+    def test_summary_includes_size(self) -> None:
+        r = EvalReport(
+            timestamp="t", citation_faithfulness=0.95,
+            correct_abstention=0.90, answer_accuracy=0.5,
+            recall_at_k=None, mrr=None,
+            litqa2_accuracy=None, litqa2_precision_at_answered=None,
+            goldset_size=50,
+        )
+        s = r.summary()
+        assert "50" in s
+
+    def test_summary_includes_note_when_present(self) -> None:
+        r = EvalReport(
+            timestamp="t", citation_faithfulness=0.95,
+            correct_abstention=0.90, answer_accuracy=0.5,
+            recall_at_k=None, mrr=None,
+            litqa2_accuracy=None, litqa2_precision_at_answered=None,
+            goldset_size=3, goldset_note="INSUFFICIENT EVIDENCE — goldset has 3 rows",
+        )
+        s = r.summary()
+        assert "INSUFFICIENT EVIDENCE" in s

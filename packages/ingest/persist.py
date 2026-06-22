@@ -12,14 +12,11 @@ from collections.abc import Sequence
 import asyncpg
 
 from core._constants import DEFAULT_BATCH_SIZE
-from core._sql import UPSERT_CHUNK_SQL, UPSERT_EMBEDDING_SQL, UPSERT_PAPER_SQL
+from core._sql import UPSERT_PAPER_SQL
 from core.errors import EmbeddingError, IngestError
-from core.interfaces import Embedder
+from core.interfaces import Embedder, Retriever
 from core.models import Chunk, Paper, UpsertChunk
 from retrieval.db import Pool
-
-_DEFAULT_MODEL = "bge-m3"
-_DEFAULT_DIM = 1024
 
 
 async def persist_document(
@@ -67,18 +64,27 @@ async def persist_document(
     upsert_items = _build_upsert_items(paper.id, chunks, vectors)
 
     # ------------------------------------------------------------------
-    # 3. Persist paper + chunks in a single transaction
+    # 3. Persist paper in a transaction
     # ------------------------------------------------------------------
     async with pool.connection() as conn:
         async with conn.transaction():
             try:
                 await _insert_paper_conn(conn, paper)
-                for item in upsert_items:
-                    await _upsert_chunk_conn(conn, item)
-            except asyncpg.PostgresError as exc:
+            except Exception as exc:
                 raise IngestError(
                     f"Failed to persist paper {paper.id}: {exc}",
                 ) from exc
+
+    # ------------------------------------------------------------------
+    # 4. Upsert chunks via retriever (idempotent per chunk)
+    # ------------------------------------------------------------------
+    try:
+        await retriever.upsert(upsert_items)
+    except Exception as exc:
+        await _delete_paper(pool, paper.id)
+        raise IngestError(
+            f"Failed to persist paper {paper.id}: {exc}",
+        ) from exc
 
     return len(upsert_items)
 
@@ -126,19 +132,6 @@ def _build_upsert_items(
         )
         for i, c in enumerate(chunks)
     ]
-
-
-async def _upsert_chunk_conn(
-    conn: asyncpg.Connection,
-    item: UpsertChunk,
-    *,
-    model: str = _DEFAULT_MODEL,
-    dim: int = _DEFAULT_DIM,
-) -> None:
-    """Upsert a single chunk + its embedding row on a given connection."""
-    vector = list(item.vector)
-    await conn.execute(UPSERT_CHUNK_SQL, item.chunk_id, item.paper_id, item.text)
-    await conn.execute(UPSERT_EMBEDDING_SQL, item.chunk_id, model, dim, vector)
 
 
 async def _insert_paper_conn(conn: asyncpg.Connection, paper: Paper) -> None:
