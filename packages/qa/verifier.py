@@ -104,15 +104,11 @@ class TwoLayerVerifier:
         self._llm = llm
         self._threshold = threshold
 
-    def verify(self, claims: list[Claim]) -> list[ClaimVerdict]:
+    async def verify(self, claims: list[Claim]) -> list[ClaimVerdict]:
         """Return a verdict for each claim in *claims*."""
-        return asyncio.run(self._verify_async(claims))
-
-    async def _verify_async(self, claims: list[Claim]) -> list[ClaimVerdict]:
-        verdicts: list[ClaimVerdict] = []
-        for claim in claims:
-            verdicts.append(await self._verify_one(claim))
-        return verdicts
+        return await asyncio.gather(*[
+            self._verify_one(claim) for claim in claims
+        ])
 
     async def _verify_one(self, claim: Claim) -> ClaimVerdict:
         # --- Layer 1: literal anchor ----------------------------------------

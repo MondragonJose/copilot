@@ -88,7 +88,7 @@ class LLMClient(Protocol):
 class Verifier(Protocol):
     """Check that each claim is supported by its cited span."""
 
-    def verify(self, claims: list[Claim]) -> list[ClaimVerdict]:
+    async def verify(self, claims: list[Claim]) -> list[ClaimVerdict]:
         """Verify each claim against its quoted source span.
         Returns a verdict for every input claim.
         """

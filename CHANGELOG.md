@@ -13,8 +13,8 @@
 - `packages/core` — Frozen dataclasses for Paper, Chunk, ChunkRef, ScoredChunk, UpsertChunk, Claim, ClaimVerdict, QAResult; Protocols for Retriever, Parser, Embedder, LLMClient, Verifier
 - `packages/retrieval` — PgVectorStore with raw SQL (hybrid + dense search, paper_id filter), BGE-M3 embedder (lazy-loaded), Qdrant stub
 - `packages/ingest` — GROBID → PyMuPDF fallback router, section-aware + page-aware chunking, Redis-backed task queue
-- `packages/qa` — QAEngine (retrieve-then-generate), LLMProvider (OpenAI / Ollama), LiteralVerifier + TwoLayerVerifier
-- `packages/eval` — GoldsetLoader, 5 metric functions, LitQA2 runner, EvalReport with PASS/FAIL gate (faithfulness ≥ 0.95 AND abstention ≥ 0.90)
+- `packages/qa` — QAEngine (retrieve-then-generate) with two-layer inline citation verification, LLMProvider (OpenAI / Ollama)
+- `packages/eval` — GoldsetLoader, 6 metric functions, LitQA2 runner, EvalReport with PASS/FAIL gate (faithfulness ≥ 0.95 AND abstention ≥ 0.90)
 - `packages/api` — FastAPI app with health, ingest, jobs, and QA routes
 - `frontend/` — Vite + React 18 + TanStack Query 5; Corpus import (file upload + DOI), PDF viewer (react-pdf → text selection → char offset mapping), Reader with annotation sidebar, Ask screen with citation deep-links to exact spans; 53 unit tests
 - `docker/` — Multi-stage Dockerfile.frontend (dev hot-reload + nginx production)

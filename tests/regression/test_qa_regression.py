@@ -220,7 +220,7 @@ class TestTwoLayerVerifierRegression:
             threshold=0.5,
         )
         claim = Claim(text="sun rises east", chunk_id="cid", quoted_span="sun rises in the east")
-        verdicts = await v._verify_async([claim])
+        verdicts = await v.verify([claim])
         assert len(verdicts) == 1
         assert verdicts[0].supported is True
         assert verdicts[0].score == 0.95
@@ -235,7 +235,7 @@ class TestTwoLayerVerifierRegression:
             threshold=0.5,
         )
         claim = Claim(text="moon rises", chunk_id="cid", quoted_span="sun rises in the east")
-        verdicts = await v._verify_async([claim])
+        verdicts = await v.verify([claim])
         assert verdicts[0].supported is False
         assert verdicts[0].reason == "entailment_below_threshold"
 
@@ -247,7 +247,7 @@ class TestTwoLayerVerifierRegression:
             llm=llm,
         )
         claim = Claim(text="t", chunk_id="cid", quoted_span="not in chunk")
-        await v._verify_async([claim])
+        await v.verify([claim])
         llm.generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -258,7 +258,7 @@ class TestTwoLayerVerifierRegression:
             llm=llm,
         )
         claim = Claim(text="t", chunk_id="missing", quoted_span="t")
-        await v._verify_async([claim])
+        await v.verify([claim])
         llm.generate.assert_not_called()
 
     @pytest.mark.asyncio
@@ -271,7 +271,7 @@ class TestTwoLayerVerifierRegression:
             threshold=0.5,
         )
         claim = Claim(text="t", chunk_id="cid", quoted_span="some text")
-        verdicts = await v._verify_async([claim])
+        verdicts = await v.verify([claim])
         assert verdicts[0].score == 0.0
         assert verdicts[0].supported is False
 
@@ -285,7 +285,7 @@ class TestTwoLayerVerifierRegression:
             threshold=0.0,
         )
         claim = Claim(text="t", chunk_id="cid", quoted_span="some context")
-        verdicts = await v._verify_async([claim])
+        verdicts = await v.verify([claim])
         assert verdicts[0].supported is True
 
     @pytest.mark.asyncio
@@ -298,7 +298,7 @@ class TestTwoLayerVerifierRegression:
             threshold=1.0,
         )
         claim = Claim(text="t", chunk_id="cid", quoted_span="some text")
-        verdicts = await v._verify_async([claim])
+        verdicts = await v.verify([claim])
         assert verdicts[0].supported is False
         assert verdicts[0].reason == "entailment_below_threshold"
 

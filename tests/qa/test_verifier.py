@@ -129,88 +129,89 @@ class TestTwoLayerVerifierConstructor:
         assert v._threshold == 1.0
 
 
+@pytest.mark.asyncio
 class TestTwoLayerVerifier:
-    def test_chunk_not_found(self, mock_llm: LLMClient) -> None:
+    async def test_chunk_not_found(self, mock_llm: LLMClient) -> None:
         v = TwoLayerVerifier({}, mock_llm)
         claims = [_make_claim(chunk_id="missing")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].supported is False
         assert verdicts[0].reason == "chunk_not_found"
 
-    def test_span_not_found(self, mock_llm: LLMClient) -> None:
+    async def test_span_not_found(self, mock_llm: LLMClient) -> None:
         v = TwoLayerVerifier({"c1": "text"}, mock_llm)
         claims = [_make_claim(quoted_span="nope")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].supported is False
         assert verdicts[0].reason == "span_not_found"
 
-    def test_entailment_below_threshold(self, mock_llm: LLMClient) -> None:
+    async def test_entailment_below_threshold(self, mock_llm: LLMClient) -> None:
         mock_llm.generate = AsyncMock(return_value="0.3")
         v = TwoLayerVerifier({"c1": "text with span"}, mock_llm, threshold=0.5)
         claims = [_make_claim(quoted_span="span")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].supported is False
         assert verdicts[0].reason == "entailment_below_threshold"
 
-    def test_supported(self, mock_llm: LLMClient) -> None:
+    async def test_supported(self, mock_llm: LLMClient) -> None:
         mock_llm.generate = AsyncMock(return_value="0.9")
         v = TwoLayerVerifier({"c1": "text with span"}, mock_llm, threshold=0.5)
         claims = [_make_claim(quoted_span="span")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].supported is True
         assert verdicts[0].score == 0.9
         assert verdicts[0].reason == ""
 
-    def test_empty_claims(self, mock_llm: LLMClient) -> None:
+    async def test_empty_claims(self, mock_llm: LLMClient) -> None:
         v = TwoLayerVerifier({"c1": "text"}, mock_llm)
-        assert v.verify([]) == []
+        assert await v.verify([]) == []
 
-    def test_judge_non_numeric_returns_zero(self, mock_llm: LLMClient) -> None:
+    async def test_judge_non_numeric_returns_zero(self, mock_llm: LLMClient) -> None:
         mock_llm.generate = AsyncMock(return_value="not a number")
         v = TwoLayerVerifier({"c1": "text span"}, mock_llm, threshold=0.5)
         claims = [_make_claim(quoted_span="span")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].supported is False
         assert verdicts[0].score == 0.0
 
-    def test_judge_clamps_above_one(self, mock_llm: LLMClient) -> None:
+    async def test_judge_clamps_above_one(self, mock_llm: LLMClient) -> None:
         mock_llm.generate = AsyncMock(return_value="42.0")
         v = TwoLayerVerifier({"c1": "text span"}, mock_llm, threshold=0.5)
         claims = [_make_claim(quoted_span="span")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].score == 1.0
 
-    def test_judge_clamps_below_zero(self, mock_llm: LLMClient) -> None:
+    async def test_judge_clamps_below_zero(self, mock_llm: LLMClient) -> None:
         mock_llm.generate = AsyncMock(return_value="-0.5")
         v = TwoLayerVerifier({"c1": "text span"}, mock_llm, threshold=0.5)
         claims = [_make_claim(quoted_span="span")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].score == 0.0
 
-    def test_threshold_at_zero_always_passes(self, mock_llm: LLMClient) -> None:
+    async def test_threshold_at_zero_always_passes(self, mock_llm: LLMClient) -> None:
         mock_llm.generate = AsyncMock(return_value="0.01")
         v = TwoLayerVerifier({"c1": "Grass is green."}, mock_llm, threshold=0.0)
         claims = [_make_claim(chunk_id="c1", quoted_span="Grass is green")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert verdicts[0].supported
         assert verdicts[0].score == 0.01
 
-    def test_threshold_at_one_requires_perfect_score(
+    async def test_threshold_at_one_requires_perfect_score(
         self, mock_llm: LLMClient,
     ) -> None:
         mock_llm.generate = AsyncMock(return_value="0.99")
         v = TwoLayerVerifier({"c1": "Grass is green."}, mock_llm, threshold=1.0)
         claims = [_make_claim(chunk_id="c1", quoted_span="Grass is green")]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert not verdicts[0].supported
         assert verdicts[0].reason == "entailment_below_threshold"
 
         mock_llm.generate = AsyncMock(return_value="1.0")
         v2 = TwoLayerVerifier({"c1": "Grass is green."}, mock_llm, threshold=1.0)
-        verdicts2 = v2.verify(claims)
+        verdicts2 = await v2.verify(claims)
         assert verdicts2[0].supported
 
-    def test_multiple_claims_all_pass(self, mock_llm: LLMClient) -> None:
+    async def test_multiple_claims_all_pass(self, mock_llm: LLMClient) -> None:
         mock_llm.generate = AsyncMock(return_value="0.95")
         v = TwoLayerVerifier(
             {"c1": "Transformers use attention.", "c2": "RNNs process sequences."},
@@ -220,7 +221,7 @@ class TestTwoLayerVerifier:
             _make_claim(text="attention", chunk_id="c1", quoted_span="use attention"),
             _make_claim(text="sequences", chunk_id="c2", quoted_span="process sequences"),
         ]
-        verdicts = v.verify(claims)
+        verdicts = await v.verify(claims)
         assert len(verdicts) == 2
         assert all(v.supported for v in verdicts)
         assert all(v.score == 0.95 for v in verdicts)

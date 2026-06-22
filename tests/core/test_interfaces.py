@@ -72,7 +72,7 @@ def test_llm_client_protocol() -> None:
 
 def test_verifier_protocol() -> None:
     assert hasattr(Verifier, "verify")
-    assert not inspect.iscoroutinefunction(Verifier.verify)
+    assert inspect.iscoroutinefunction(Verifier.verify)
     sig = inspect.signature(Verifier.verify)
     params = list(sig.parameters)
     assert "claims" in params

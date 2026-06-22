@@ -101,7 +101,7 @@ class DummyLLMClient:
 
 
 class DummyVerifier:
-    def verify(self, claims: list[Claim]) -> list[ClaimVerdict]:
+    async def verify(self, claims: list[Claim]) -> list[ClaimVerdict]:
         return [
             ClaimVerdict(claim=c, supported=True, score=1.0, reason="ok")
             for c in claims
@@ -159,10 +159,11 @@ class TestVerifierShape:
     def test_methods_present(self) -> None:
         assert hasattr(DummyVerifier(), "verify")
 
-    def test_verify_returns_verdicts(self) -> None:
+    @pytest.mark.asyncio
+    async def test_verify_returns_verdicts(self) -> None:
         v = DummyVerifier()
         claim = Claim(text="test", chunk_id="c1", quoted_span="test")
-        verdicts = v.verify([claim])
+        verdicts = await v.verify([claim])
         assert len(verdicts) == 1
         assert verdicts[0].supported is True
 

@@ -16,14 +16,13 @@ Policy (Blueprint §5)
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Sequence
 
 from core.interfaces import Embedder, LLMClient, Retriever
 from core.models import Claim, ClaimVerdict, QAResult, ScoredChunk
-from qa._nli import judge_entailment
 from qa.llm import LLMError
+from qa.verifier import TwoLayerVerifier
 
 _RETRY_K_MULTIPLIER = 2
 
@@ -149,7 +148,7 @@ class QAEngine:
         return answer_text, claims
 
     # ------------------------------------------------------------------
-    # Verification — anchor + entailment judge
+    # Verification — delegated to TwoLayerVerifier
     # ------------------------------------------------------------------
 
     async def _verify_claims(
@@ -157,56 +156,12 @@ class QAEngine:
         claims: list[Claim],
         chunk_texts: dict[str, str],
     ) -> list[ClaimVerdict]:
-        """Two-layer verification for every claim.
-
-        Layer 1 — literal anchor: ``quoted_span`` must be an exact substring
-        of the chunk text.
-        Layer 2 — entailment: LLM-based NLI judge produces a 0..1 score.
-        """
-        return list(await asyncio.gather(*[
-            self._verify_one(claim, chunk_texts) for claim in claims
-        ]))
-
-    async def _verify_one(
-        self,
-        claim: Claim,
-        chunk_texts: dict[str, str],
-    ) -> ClaimVerdict:
-        chunk_text = chunk_texts.get(claim.chunk_id)
-        if chunk_text is None:
-            return ClaimVerdict(
-                claim=claim,
-                supported=False,
-                score=0.0,
-                reason="chunk_not_found",
-            )
-
-        if claim.quoted_span not in chunk_text:
-            return ClaimVerdict(
-                claim=claim,
-                supported=False,
-                score=0.0,
-                reason="span_not_found",
-            )
-
-        entailment_score = await judge_entailment(
-            self._llm, chunk_text, claim.text,
+        verifier = TwoLayerVerifier(
+            chunk_texts=chunk_texts,
+            llm=self._llm,
+            threshold=self._verifier_threshold,
         )
-
-        if entailment_score >= self._verifier_threshold:
-            return ClaimVerdict(
-                claim=claim,
-                supported=True,
-                score=entailment_score,
-                reason="",
-            )
-
-        return ClaimVerdict(
-            claim=claim,
-            supported=False,
-            score=entailment_score,
-            reason="entailment_below_threshold",
-        )
+        return await verifier.verify(claims)
 
     # ------------------------------------------------------------------
     # Blueprint §5 policy
