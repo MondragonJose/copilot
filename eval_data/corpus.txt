@@ -1,0 +1,3 @@
+{"question": "What mechanism allows transformers to weigh token importance?", "gold_answer": "self-attention"}
+{"question": "How many layers does the transformer encoder contain?", "gold_answer": "six"}
+{"question": "What type of normalization does the transformer use?", "gold_answer": "layer normalization"}

@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-copilot"
+version = "0.1.0"
+description = "Research Copilot — MVP v0.1. Academic research assistant with grounded citation verification."
+requires-python = ">=3.11"
+authors = [
+    { name = "Research Copilot Team" },
+]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "asyncpg>=0.30",
+    "redis>=5,<9",
+    "pydantic-settings>=2",
+    "httpx>=0.27",
+    "PyMuPDF>=1.27",
+    "python-multipart>=0.0.18",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio",
+    "mypy>=1",
+    "ruff>=0.1",
+    "import-linter>=2",
+    "pre-commit>=3",
+]
+test = ["pytest>=7", "pytest-asyncio"]
+embedding = ["sentence-transformers>=3"]
+
+[tool.setuptools.packages.find]
+where = ["packages"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["packages", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "redis", "pytest_asyncio"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["packages"]
+
+[tool.importlinter]
+root_packages = ["core", "ingest", "retrieval", "qa", "eval", "api", "worker"]
+
+[[tool.importlinter.contracts]]
+name = "Core must not import any internal package"
+type = "forbidden"
+source_modules = ["core"]
+forbidden_modules = ["ingest", "retrieval", "qa", "eval", "api"]
+
+[[tool.importlinter.contracts]]
+name = "Retrieval must only import core"
+type = "forbidden"
+source_modules = ["retrieval"]
+forbidden_modules = ["ingest", "qa", "eval", "api"]
+
+[[tool.importlinter.contracts]]
+name = "Ingest must not import qa, eval or api"
+type = "forbidden"
+source_modules = ["ingest"]
+forbidden_modules = ["qa", "eval", "api"]
+
+[[tool.importlinter.contracts]]
+name = "QA must not import ingest, eval or api"
+type = "forbidden"
+source_modules = ["qa"]
+forbidden_modules = ["ingest", "eval", "api"]
+
+[[tool.importlinter.contracts]]
+name = "Eval must not import ingest or api"
+type = "forbidden"
+source_modules = ["eval"]
+forbidden_modules = ["ingest", "api"]
+
+[[tool.importlinter.contracts]]
+name = "Worker must not import api, qa or eval"
+type = "forbidden"
+source_modules = ["worker"]
+forbidden_modules = ["api", "qa", "eval"]

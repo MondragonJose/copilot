@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,test]"
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Mypy (core)
+        run: mypy packages/core
+
+      - name: Import linter
+        run: lint-imports
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rc
+          POSTGRES_PASSWORD: rc
+          POSTGRES_DB: research_copilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rc -d research_copilot"
+          --health-interval 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,test]"
+
+      - name: Run tests
+        run: pytest -v
+        env:
+          DATABASE_URL: postgresql://rc:rc@localhost:5432/research_copilot
+          REDIS_URL: redis://localhost:6379/0

@@ -1,0 +1,104 @@
+# Research Copilot — Local stack (MVP v0.1)
+# `docker compose up` starts the full app (db, redis, grobid, api, frontend).
+# Worker is excluded by default — enable it for background ingest processing.
+
+services:
+
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rc
+      POSTGRES_PASSWORD: rc
+      POSTGRES_DB: research_copilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rc -d research_copilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  grobid:
+    image: lfoppiano/grobid:0.8.1
+    ports:
+      - "8070:8070"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8070/api/isalive || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://rc:rc@db:5432/research_copilot
+      REDIS_URL: redis://redis:6379/0
+      GROBID_URL: http://grobid:8070
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    develop:
+      watch:
+        - path: packages/
+          action: rebuild
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+      target: development
+    environment:
+      VITE_API_URL: http://api:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+      
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://rc:rc@db:5432/research_copilot
+      REDIS_URL: redis://redis:6379/0
+      GROBID_URL: http://grobid:8070
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      grobid:
+        condition: service_started
+
+volumes:
+  pgdata:

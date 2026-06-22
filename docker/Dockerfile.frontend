@@ -1,0 +1,49 @@
+# Research Copilot — Frontend (Vite + React + TypeScript)
+#
+# Two build targets:
+#   development — `npm run dev` with hot reload (default)
+#   production  — static build served by nginx
+#
+# Usage:
+#   docker compose build frontend
+#   docker compose up frontend
+#
+# Build context must be the repo root (parent of frontend/).  Paths
+# in COPY instructions are relative to that root.
+
+# ────────────────────────────────────────────────────────────────────
+# Stage 1 — Install dependencies (cached layer)
+# ────────────────────────────────────────────────────────────────────
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+# ────────────────────────────────────────────────────────────────────
+# Stage 2 — Build for production
+# ────────────────────────────────────────────────────────────────────
+FROM deps AS build
+COPY frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json frontend/vite.config.ts ./
+COPY frontend/index.html ./
+COPY frontend/public/ public/
+COPY frontend/src/ src/
+ARG VITE_API_URL=http://api:8000
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build
+
+# ────────────────────────────────────────────────────────────────────
+# Stage 3 — Production server (nginx)
+# ────────────────────────────────────────────────────────────────────
+FROM nginx:alpine AS production
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY docker/nginx.frontend.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+# ────────────────────────────────────────────────────────────────────
+# Default target — Development server (hot-reload)
+# ────────────────────────────────────────────────────────────────────
+FROM deps AS development
+COPY frontend/ ./
+EXPOSE 5173
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

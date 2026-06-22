@@ -1,0 +1,54 @@
+# Research Copilot — Test infrastructure (db, redis, grobid)
+# Start before running integration tests:
+#   docker compose -f docker-compose.test.yml up -d --wait
+# Stop when done:
+#   docker compose -f docker-compose.test.yml down -v
+
+services:
+
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rc
+      POSTGRES_PASSWORD: rc
+      POSTGRES_DB: research_copilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgtest_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rc -d research_copilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  grobid:
+    image: lfoppiano/grobid:0.8.1
+    ports:
+      - "8070:8070"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8070/api/isalive || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
+volumes:
+  pgtest_data:
